@@ -275,8 +275,31 @@ sentinel0 status                     is it up, and what does it see
 sentinel0 runs --status failed       what went wrong
 sentinel0 logs --run <id>            one run in full
 sentinel0 cancel <id>                stop it here and on Hermes
+sentinel0 approve <id>               let a waiting agent proceed
+sentinel0 approve <id> --deny        refuse it
 sentinel0 runner status              launchd state
 ```
+
+## When an agent asks for permission
+
+Hermes stops an agent before certain tool calls and waits for a person. The run shows
+as `awaiting_approval`, Slack says so if you have it configured, and the run keeps its
+agent until it is answered — one run per profile, so nothing else dispatches to that
+agent meanwhile.
+
+Answer it from the dashboard's run page, or from the runner's own machine:
+
+```bash
+sentinel0 runs --status awaiting_approval
+sentinel0 approve <id>            # allows the rest of this run
+sentinel0 approve <id> --once     # allows only the call it is waiting on
+sentinel0 approve <id> --deny
+```
+
+Nobody has to be watching for this to end: after an hour unanswered — tune it per route
+with `execution.approvalTimeoutSeconds` — the runner denies the request and fails the
+run, so a forgotten approval cannot hold an agent forever. The run's own timeout does
+not tick while it waits.
 
 ## When something is wrong
 

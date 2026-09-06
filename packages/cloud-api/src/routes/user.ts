@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import {
+  APPROVAL_CHOICES,
   DEFAULT_ROUTE_GUARD,
+  isApprovalChoice,
   SENTINEL0_LABELS,
   PROMPT_CATALOG,
   PROMPT_VARIABLES,
@@ -89,7 +91,7 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
     const { orgId } = authOf(request)
     const { rows } = await db.query(
       `SELECT id, name, hostname, version, last_seen_at, started_at,
-              hermes_ok, hermes_detail, active_runs, last_error,
+              hermes_ok, hermes_detail, active_runs, last_error, recent_skips,
               (last_seen_at < now() - interval '90 seconds') AS stale
        FROM runners WHERE org_id = $1 ORDER BY name`,
       [orgId]
@@ -102,7 +104,8 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
     const { rows } = await db.query(
       `SELECT a.id, a.profile, a.display_name, a.role, a.model, a.provider,
               a.toolsets, a.skills, a.github_login, a.avatar_url, a.enabled, a.synced_at,
-              r.name AS runner
+              a.status, a.current_run_id, a.status_at,
+              r.name AS runner, (r.last_seen_at < now() - interval '90 seconds') AS runner_stale
        FROM agents a JOIN runners r ON r.id = a.runner_id
        WHERE a.org_id = $1 ORDER BY a.profile`,
       [orgId]
@@ -296,7 +299,8 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
 
     const { rows } = await db.query(
       `SELECT id, route_name, agent_profile, project_id, trigger_ref, trigger_url, title,
-              status, summary, error, started_at, ended_at, updated_at
+              status, summary, error, hermes_run_id, approval_detail,
+              started_at, ended_at, updated_at
        FROM runs WHERE org_id = $1 AND ($2::text IS NULL OR status = $2)
        ORDER BY updated_at DESC LIMIT $3`,
       [orgId, query.status ?? null, limit]
@@ -431,6 +435,46 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
       [id, orgId, JSON.stringify({ event: body.event })]
     )
     return reply.code(202).send({ queued: id })
+  })
+
+  /**
+   * Answer an agent that has stopped for permission.
+   *
+   * Addressed at the runner holding the run, unlike cancel: an approval reaching
+   * the wrong machine is not merely useless, it is a command that will never be
+   * answered and that nothing will retry. The run row records which runner
+   * mirrored it, so there is no guessing.
+   */
+  app.post('/v1/runs/:id/approval', async (request, reply) => {
+    const { orgId } = authOf(request)
+    const { id } = request.params as { id: string }
+    const { choice } = (request.body ?? {}) as { choice?: unknown }
+
+    if (!isApprovalChoice(choice)) {
+      return reply
+        .code(400)
+        .send({ error: `choice must be one of: ${APPROVAL_CHOICES.join(', ')}.` })
+    }
+
+    const { rows } = await db.query<{ runner_id: string | null; status: string }>(
+      'SELECT runner_id, status FROM runs WHERE org_id = $1 AND id = $2',
+      [orgId, id]
+    )
+    const run = rows[0]
+    if (!run) {
+      return reply.code(404).send({ error: `Run "${id}" not found.` })
+    }
+    if (run.status !== 'awaiting_approval') {
+      return reply.code(409).send({ error: `Run "${id}" is ${run.status}, not awaiting approval.` })
+    }
+
+    const commandId = newId('cmd')
+    await db.query(
+      `INSERT INTO runner_commands (id, org_id, runner_id, type, payload)
+       VALUES ($1,$2,$3,'approve',$4)`,
+      [commandId, orgId, run.runner_id, JSON.stringify({ runId: id, choice })]
+    )
+    return reply.code(202).send({ queued: commandId, choice })
   })
 
   app.post('/v1/runs/:id/cancel', async (request, reply) => {

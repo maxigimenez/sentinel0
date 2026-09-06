@@ -203,6 +203,16 @@ export interface RouteMatch {
   /** Matched against current assignees. */
   assignees?: StringSetMatch
   /**
+   * Matched against reviewers currently requested.
+   *
+   * The state counterpart of `reviewersAdded`. Transition clauses cannot match
+   * the first time an item is seen -- there is nothing to compare against --
+   * so a route that must work for requests made while the runner was down
+   * needs this one, and relies on the dispatch ledger rather than on history
+   * to fire only once per change.
+   */
+  reviewers?: StringSetMatch
+  /**
    * Matched against what changed since the previous observation.
    *
    * These never match on first sight, which is what stops a new route from
@@ -246,7 +256,42 @@ export interface RouteExecution {
   requireApproval: boolean
   modelOverride?: string | null
   timeoutSeconds: number
+  /**
+   * How long a run may sit waiting for a human to answer Hermes' approval gate.
+   *
+   * Separate from `timeoutSeconds` because the two measure different things:
+   * that one bounds how long the agent may work, this one bounds how long a
+   * person may take to notice Slack. The run clock stops while the approval
+   * clock runs, so a deliberating human never eats the agent's budget.
+   */
+  approvalTimeoutSeconds?: number
 }
+
+/**
+ * Hermes' approval vocabulary, verbatim.
+ *
+ * `POST /v1/runs/{id}/approval` takes `{"choice": ...}` and rejects anything
+ * else with `invalid_approval_choice`, so this union is the wire contract and
+ * not a Sentinel0 invention. The dashboard offers approve (`session`) and deny;
+ * `once` and `always` exist for the CLI and for completeness.
+ */
+export const APPROVAL_CHOICE = {
+  ONCE: 'once',
+  SESSION: 'session',
+  ALWAYS: 'always',
+  DENY: 'deny',
+} as const
+
+export type ApprovalChoice = (typeof APPROVAL_CHOICE)[keyof typeof APPROVAL_CHOICE]
+
+export const APPROVAL_CHOICES: readonly ApprovalChoice[] = Object.values(APPROVAL_CHOICE)
+
+export function isApprovalChoice(value: unknown): value is ApprovalChoice {
+  return typeof value === 'string' && (APPROVAL_CHOICES as readonly string[]).includes(value)
+}
+
+/** One hour: long enough to walk away from Slack, short enough to free the agent. */
+export const DEFAULT_APPROVAL_TIMEOUT_SECONDS = 3600
 
 /**
  * Placeholders available inside `RouteExecution.prompt`.
@@ -340,6 +385,21 @@ export interface RunUsage {
   costUsd?: number
 }
 
+/**
+ * What an agent is waiting to be allowed to do.
+ *
+ * Hermes' run state is the preferred source; when it says only "pending
+ * approval" without saying what for, the adapter falls back to the last tool
+ * call it saw on the event stream. Either way this is a hint for a human, never
+ * something matched on -- hence every field optional.
+ */
+export interface RunApprovalDetail {
+  tool?: string
+  command?: string
+  arguments?: string
+  requestedAt: number
+}
+
 export interface RunRecord {
   id: string
   routeId: string
@@ -354,6 +414,7 @@ export interface RunRecord {
   status: RunStatus
   hermesRunId?: string
   hermesSessionId?: string
+  approvalDetail?: RunApprovalDetail
   summary?: string
   error?: string
   usage?: RunUsage

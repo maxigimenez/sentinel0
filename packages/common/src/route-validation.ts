@@ -54,6 +54,14 @@ export function validateRoutingRule(route: RoutingRule): string | undefined {
   if (route.execution.timeoutSeconds < 1) {
     return 'execution.timeoutSeconds must be positive.'
   }
+  if (route.execution.approvalTimeoutSeconds !== undefined) {
+    if (typeof route.execution.approvalTimeoutSeconds !== 'number') {
+      return 'execution.approvalTimeoutSeconds must be a number.'
+    }
+    if (route.execution.approvalTimeoutSeconds < 1) {
+      return 'execution.approvalTimeoutSeconds must be positive.'
+    }
+  }
 
   if (route.guard) {
     if (route.guard.refire !== 'once' && route.guard.refire !== 'per-change') {

@@ -2,11 +2,18 @@ import {
   RUN_STATUS,
   isTerminalRunStatus,
   type Logger,
+  type RunApprovalDetail,
   type RunRecord,
   type RunStatus,
   type RunUsage,
 } from '@sentinel0/common'
 import type { Sentinel0Database } from '../database.js'
+
+/** "Waiting for approval: gh pr review 42 --approve", when we know that much. */
+function describeGate(detail?: RunApprovalDetail): string {
+  const what = detail?.command ?? detail?.arguments ?? detail?.tool
+  return what ? `Waiting for approval: ${what}` : 'Waiting for approval'
+}
 
 /**
  * Notified whenever a run is created or changes status.
@@ -54,15 +61,24 @@ export class RunLifecycle {
     status: RunStatus,
     message: string,
     icon: string,
-    extra: { summary?: string; error?: string; usage?: RunUsage } = {}
+    extra: {
+      summary?: string
+      error?: string
+      usage?: RunUsage
+      approvalDetail?: RunApprovalDetail | null
+    } = {}
   ): void {
     const now = Date.now()
+    // A run that resumes after an approval is running *again*, not starting
+    // over: re-stamping startedAt here would erase however long it had already
+    // worked and make every elapsed time on the dashboard a lie.
+    const alreadyStarted = this.db.getRun(runId)?.startedAt !== undefined
     this.db.updateRun(
       runId,
       {
         status,
         ...extra,
-        ...(status === RUN_STATUS.RUNNING ? { startedAt: now } : {}),
+        ...(status === RUN_STATUS.RUNNING && !alreadyStarted ? { startedAt: now } : {}),
         ...(status === RUN_STATUS.COMPLETED ||
         status === RUN_STATUS.FAILED ||
         status === RUN_STATUS.CANCELED
@@ -99,8 +115,25 @@ export class RunLifecycle {
     this.transition(runId, RUN_STATUS.RUNNING, message, '>')
   }
 
-  awaitingApproval(runId: string, message = 'Waiting for approval'): void {
-    this.transition(runId, RUN_STATUS.AWAITING_APPROVAL, message, '?')
+  /**
+   * The agent has stopped at a gate and is waiting on a person.
+   *
+   * The detail travels with the transition so that whoever reads Slack or the
+   * dashboard learns *what* is being asked, not merely that something is.
+   */
+  awaitingApproval(runId: string, detail?: RunApprovalDetail): void {
+    this.transition(
+      runId,
+      RUN_STATUS.AWAITING_APPROVAL,
+      describeGate(detail),
+      '?',
+      detail ? { approvalDetail: detail } : {}
+    )
+  }
+
+  /** A gate was answered; the agent is working again. */
+  approvalResolved(runId: string, message = 'Approved; the agent resumed'): void {
+    this.transition(runId, RUN_STATUS.RUNNING, message, '>', { approvalDetail: null })
   }
 
   completed(runId: string, summary?: string, usage?: RunUsage): void {

@@ -159,8 +159,8 @@ export function RouteForm({
               onChange={(event) => set({ agentGithubLogin: event.target.value })}
               hint={
                 selectedAgent && !selectedAgent.github_login
-                  ? `The runner reported no GitHub login for "${selectedAgent.profile}". This route only fires when that identity is the one asked to review, so it needs one.`
-                  : 'Filled from the selected agent. This route fires only when this identity is requested.'
+                  ? `The runner reported no GitHub login for "${selectedAgent.profile}", so this route can never match it. Set githubLogin for that profile in the runner's config and reload; it cannot be set from here.`
+                  : 'Filled from the selected agent. This route fires when that account is assigned to the item or asked to review it.'
               }
             />
           ) : null}

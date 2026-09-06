@@ -26,7 +26,7 @@ import { duration, initials, relativeTime, STATUS_TONE } from '../lib/format.js'
  */
 export function RunTable({ runs, now }: { runs: Run[]; now: number }): ReactNode {
   return (
-    <Table scrollLabel="Runs" containerClassName="px-tablewrap" minWidth={640}>
+    <Table scrollLabel="Runs" containerClassName="px-tablewrap" minWidth={560}>
       <TableHead>
         <TableRow>
           <TableHeader>Trigger</TableHeader>
@@ -61,7 +61,7 @@ export function RunTable({ runs, now }: { runs: Run[]; now: number }): ReactNode
                 </span>
               </TableCell>
               <TableCell>
-                <Text size="small" tone="soft">
+                <Text size="small" tone="soft" className="px-cellclip">
                   {run.route_name ?? '—'}
                 </Text>
               </TableCell>

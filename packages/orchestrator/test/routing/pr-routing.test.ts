@@ -339,3 +339,75 @@ describe('the review cycle: request, review, re-request, review again', () => {
     expect(matchesRule(reviewRoute, event)).toBe(true)
   })
 })
+
+/**
+ * Targeting an agent by its GitHub account.
+ *
+ * The gate behind `target.agentRef.githubLogin` used to consult requested
+ * reviewers and nothing else, while route validation happily accepted the same
+ * target on a `pr_event` trigger. The obvious route -- assign the pull request
+ * to the agent -- was therefore saveable and could never fire, with no error
+ * anywhere to say so.
+ */
+describe('targeting an agent by github login', () => {
+  const targeted = (match: RoutingRule['match']): RoutingRule =>
+    rule({ match, target: { agentRef: { githubLogin: 'acme-bot' } } })
+
+  it('fires when the agent is assigned, not only when review is requested', () => {
+    const route = targeted({ assigneesAdded: { any: ['acme-bot'] } })
+    const event = pr({
+      assignees: ['acme-bot'],
+      changes: {
+        labelsAdded: [],
+        labelsRemoved: [],
+        assigneesAdded: ['acme-bot'],
+        assigneesRemoved: [],
+        reviewersAdded: [],
+      },
+    })
+
+    expect(matchesRule(route, event)).toBe(true)
+  })
+
+  it('still fires when the agent is requested as a reviewer', () => {
+    const route = targeted({ reviewersAdded: { any: ['acme-bot'] } })
+    const event = pr({
+      requestedReviewers: ['acme-bot'],
+      changes: {
+        labelsAdded: [],
+        labelsRemoved: [],
+        assigneesAdded: [],
+        assigneesRemoved: [],
+        reviewersAdded: ['acme-bot'],
+      },
+    })
+
+    expect(matchesRule(route, event)).toBe(true)
+  })
+
+  it('does not fire when someone else was named', () => {
+    const route = targeted({ assignees: { any: ['acme-bot'] } })
+
+    expect(
+      matchesRule(route, pr({ assignees: ['someone-else'], requestedReviewers: ['another-bot'] }))
+    ).toBe(false)
+  })
+
+  it('matches the login however it is capitalized', () => {
+    const route = targeted({})
+
+    expect(matchesRule(route, pr({ assignees: ['ACME-Bot'] }))).toBe(true)
+  })
+})
+
+describe('reviewers as current state', () => {
+  it('matches an outstanding request without needing history', () => {
+    // The transition clause cannot fire the first time an item is seen, because
+    // there is nothing to compare against. This one can, for the routes that
+    // would rather catch a standing request than miss it.
+    const route = rule({ match: { reviewers: { any: ['acme-bot'] } } })
+
+    expect(matchesRule(route, pr({ requestedReviewers: ['acme-bot'] }))).toBe(true)
+    expect(matchesRule(route, pr({ requestedReviewers: [] }))).toBe(false)
+  })
+})

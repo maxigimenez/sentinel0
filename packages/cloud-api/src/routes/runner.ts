@@ -15,6 +15,9 @@ async function requireRunner(
   return authenticate(db, parseBearer(header), 'runner')
 }
 
+/** The only agent states a runner may report; anything else is ignored. */
+const AGENT_STATUSES = ['idle', 'busy', 'awaiting_approval']
+
 export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/v1/runner/')) {
@@ -32,10 +35,20 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
     // runner on an older build, which never sends a heartbeat, still reports as
     // alive because it is still polling.
     //
+    // Scoped to the runner that made the call. Without the name filter this
+    // marked every runner in the org alive whenever any one of them called,
+    // which makes the staleness flag meaningless the moment there are two.
+    //
     // Fire-and-forget: liveness bookkeeping must not fail a real request.
-    void db
-      .query('UPDATE runners SET last_seen_at = now() WHERE org_id = $1', [auth.orgId])
-      .catch(() => undefined)
+    const name = callerName(request)
+    if (name) {
+      void db
+        .query('UPDATE runners SET last_seen_at = now() WHERE org_id = $1 AND name = $2', [
+          auth.orgId,
+          name,
+        ])
+        .catch(() => undefined)
+    }
   })
 
   const authOf = (request: unknown): AuthContext => (request as { auth: AuthContext }).auth
@@ -87,6 +100,8 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
       hermesDetail?: string
       activeRuns?: number
       lastError?: string | null
+      agents?: Array<{ profile?: string; status?: string; runId?: string }>
+      skips?: unknown[]
     }
 
     if (!body.name) {
@@ -95,12 +110,14 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
 
     const { rowCount } = await db.query(
       `UPDATE runners
-          SET last_seen_at  = now(),
-              started_at    = COALESCE($3::timestamptz, started_at),
-              hermes_ok     = $4,
-              hermes_detail = $5,
-              active_runs   = $6,
-              last_error    = $7
+          SET last_seen_at      = now(),
+              started_at        = COALESCE($3::timestamptz, started_at),
+              hermes_ok         = $4,
+              hermes_detail     = $5,
+              active_runs       = $6,
+              last_error        = $7,
+              recent_skips      = COALESCE($8::jsonb, recent_skips),
+              stale_notified_at = NULL
         WHERE org_id = $1 AND name = $2`,
       [
         orgId,
@@ -110,6 +127,7 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
         body.hermesDetail ?? null,
         body.activeRuns ?? null,
         body.lastError ?? null,
+        body.skips ? JSON.stringify(body.skips) : null,
       ]
     )
 
@@ -119,6 +137,24 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
     if (rowCount === 0) {
       return reply.code(404).send({ error: `Runner "${body.name}" is not registered.` })
     }
+
+    // Per-agent liveness. Written here rather than inferred from run rows,
+    // which is what the dashboard did and why it reported agents busy long
+    // after their runs had ended.
+    for (const agent of body.agents ?? []) {
+      if (!agent.profile || !AGENT_STATUSES.includes(agent.status ?? '')) {
+        continue
+      }
+      await db.query(
+        `UPDATE agents SET status = $3, current_run_id = $4, status_at = now()
+          FROM runners
+         WHERE agents.runner_id = runners.id
+           AND runners.org_id = $1 AND runners.name = $2
+           AND agents.profile = $5`,
+        [orgId, body.name, agent.status, agent.runId ?? null, agent.profile]
+      )
+    }
+
     return { ok: true }
   })
 
@@ -249,7 +285,7 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
   app.post('/v1/runner/runs', async (request) => {
     const { orgId } = authOf(request)
     const { run } = request.body as { run: RunRecord }
-    await upsertRun(db, orgId, await currentRunner(db, orgId), run)
+    await upsertRun(db, orgId, await currentRunner(db, orgId, callerName(request)), run)
     await notifyRunEvent(db, orgId, run, 'run.started')
     return { ok: true }
   })
@@ -257,7 +293,7 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
   app.patch('/v1/runner/runs/:runId', async (request) => {
     const { orgId } = authOf(request)
     const { run } = request.body as { run: RunRecord }
-    await upsertRun(db, orgId, await currentRunner(db, orgId), run)
+    await upsertRun(db, orgId, await currentRunner(db, orgId, callerName(request)), run)
     await notifyRunEvent(db, orgId, run, statusEvent(run.status))
     return { ok: true }
   })
@@ -302,7 +338,27 @@ function statusEvent(status: string): string {
   }
 }
 
-async function currentRunner(db: Database, orgId: string): Promise<string | null> {
+/**
+ * Which runner a mirrored run belongs to.
+ *
+ * The caller names itself on the query string; falling back to "whichever
+ * runner was seen most recently" attributes one machine's runs to another as
+ * soon as there are two, and is kept only so an older runner still mirrors.
+ */
+async function currentRunner(
+  db: Database,
+  orgId: string,
+  name?: string | null
+): Promise<string | null> {
+  if (name) {
+    const { rows } = await db.query<{ id: string }>(
+      'SELECT id FROM runners WHERE org_id = $1 AND name = $2',
+      [orgId, name]
+    )
+    if (rows[0]) {
+      return rows[0].id
+    }
+  }
   const { rows } = await db.query<{ id: string }>(
     'SELECT id FROM runners WHERE org_id = $1 ORDER BY last_seen_at DESC LIMIT 1',
     [orgId]
@@ -310,10 +366,16 @@ async function currentRunner(db: Database, orgId: string): Promise<string | null
   return rows[0]?.id ?? null
 }
 
+/** The runner's own name, as carried on every call that knows it. */
+function callerName(request: { query?: unknown }): string | null {
+  const query = (request.query ?? {}) as { runner?: string }
+  return query.runner ? String(query.runner) : null
+}
+
 interface CommandRow {
   cursor: string
   id: string
-  type: 'run' | 'cancel' | 'resync' | 'run-prompt'
+  type: 'run' | 'cancel' | 'resync' | 'run-prompt' | 'approve'
   payload: Record<string, unknown>
 }
 
@@ -366,20 +428,29 @@ async function upsertRun(
 ): Promise<void> {
   await db.query(
     `INSERT INTO runs (id, org_id, runner_id, route_id, route_name, agent_profile, project_id,
-                       trigger_type, trigger_ref, trigger_url, title, status, hermes_run_id,
+                       trigger_type, trigger_ref, trigger_revision, trigger_url, title, status,
+                       hermes_run_id, hermes_session_id, approval_detail,
                        summary, error, usage, started_at, ended_at, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-             to_timestamp($17::double precision / 1000), to_timestamp($18::double precision / 1000),
-             to_timestamp($19::double precision / 1000), now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+             to_timestamp($20::double precision / 1000), to_timestamp($21::double precision / 1000),
+             to_timestamp($22::double precision / 1000),
+             to_timestamp($23::double precision / 1000))
      ON CONFLICT (id) DO UPDATE SET
        status = EXCLUDED.status,
        hermes_run_id = COALESCE(EXCLUDED.hermes_run_id, runs.hermes_run_id),
+       hermes_session_id = COALESCE(EXCLUDED.hermes_session_id, runs.hermes_session_id),
+       -- Not COALESCE: a gate that has been answered must clear, and the
+       -- runner reports that by sending null.
+       approval_detail = EXCLUDED.approval_detail,
        summary = COALESCE(EXCLUDED.summary, runs.summary),
        error = COALESCE(EXCLUDED.error, runs.error),
        usage = COALESCE(EXCLUDED.usage, runs.usage),
        started_at = COALESCE(EXCLUDED.started_at, runs.started_at),
        ended_at = COALESCE(EXCLUDED.ended_at, runs.ended_at),
-       updated_at = now()`,
+       -- The run's own clock, not the server's. Stamping now() here ordered
+       -- the dashboard by when the mirror happened to flush, which under an
+       -- outage is minutes after anything actually happened.
+       updated_at = EXCLUDED.updated_at`,
     [
       run.id,
       orgId,
@@ -390,16 +461,20 @@ async function upsertRun(
       run.projectId,
       run.triggerType,
       run.triggerRef,
+      run.triggerRevision ?? null,
       run.triggerUrl ?? null,
       run.title,
       run.status,
       run.hermesRunId ?? null,
+      run.hermesSessionId ?? null,
+      run.approvalDetail ? JSON.stringify(run.approvalDetail) : null,
       run.summary ?? null,
       run.error ?? null,
       run.usage ? JSON.stringify(run.usage) : null,
       run.startedAt ?? null,
       run.endedAt ?? null,
       run.createdAt,
+      run.updatedAt,
     ]
   )
 }

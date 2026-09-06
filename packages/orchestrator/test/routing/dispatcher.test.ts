@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   COMMENT_TARGET,
   RUN_STATUS,
+  SENTINEL0_LABEL,
   TICKET_PROVIDER,
   TRIGGER_TYPE,
   type AgentDescriptor,
@@ -371,14 +372,35 @@ describe('Dispatcher.dispatch', () => {
     expect(warnings.join(' ')).toContain('linear is down')
   })
 
-  it('records a pending approval without posting an outcome', async () => {
-    server = await startFakeHermes({ statuses: ['pending_approval'] })
+  it('holds the marker through an approval and clears it when the run ends', async () => {
+    server = await startFakeHermes({
+      statuses: ['pending_approval', 'completed'],
+      output: 'SENTINEL0_SUMMARY: approved and done',
+    })
     const outcomes = makeOutcomes()
 
     const result = await (await makeDispatcher(server, { outcomes })).dispatch(event(), [route()])
 
-    expect(result).toMatchObject({ status: RUN_STATUS.AWAITING_APPROVAL })
-    expect(outcomes.comments).toEqual([])
+    // An approval is a state the run passes through. Reporting it as the
+    // dispatch's outcome stranded the run: the in-progress marker stayed on the
+    // ticket forever, which makes the item unroutable by anything, and the
+    // agent stayed occupied.
+    expect(result).toMatchObject({ status: RUN_STATUS.COMPLETED })
+    expect(db.countActiveRunsForAgent('product')).toBe(0)
+    expect(JSON.stringify(outcomes.labelCalls)).toContain(SENTINEL0_LABEL.IN_PROGRESS)
+  })
+
+  it('records what the agent is waiting for, so a human can answer it', async () => {
+    server = await startFakeHermes({ statuses: ['pending_approval'] })
+    const dispatcher = await makeDispatcher(server, { outcomes: makeOutcomes() })
+
+    // Left waiting on purpose: the assertion is about what is visible *while*
+    // a person is deciding, which is the entire point of the state.
+    void dispatcher.dispatch(event(), [route()])
+
+    await vi.waitFor(() => {
+      expect(db.getRun('pxr_1')?.status).toBe(RUN_STATUS.AWAITING_APPROVAL)
+    })
     expect(db.countActiveRunsForAgent('product')).toBe(1)
   })
 })

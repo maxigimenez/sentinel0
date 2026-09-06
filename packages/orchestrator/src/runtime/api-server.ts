@@ -1,11 +1,14 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import cors from '@fastify/cors'
-import type {
-  AgentDescriptor,
-  AppConfig,
-  ProjectConfig,
-  RoutingRule,
-  RunStatus,
+import {
+  APPROVAL_CHOICES,
+  isApprovalChoice,
+  type AgentDescriptor,
+  type AppConfig,
+  type ApprovalChoice,
+  type ProjectConfig,
+  type RoutingRule,
+  type RunStatus,
 } from '@sentinel0/common'
 import type { Sentinel0Database } from '../database.js'
 import { readRunnerErrors } from './diagnostics.js'
@@ -18,6 +21,7 @@ export interface ApiServerDeps {
   getRoutes: () => RoutingRule[]
   reload: () => Promise<AppConfig>
   cancelRun: (runId: string) => Promise<boolean>
+  approveRun: (runId: string, choice: ApprovalChoice) => Promise<{ ok: boolean; reason?: string }>
   db: Sentinel0Database
   dataDir: string
 }
@@ -125,6 +129,27 @@ export async function createApiServer(deps: ApiServerDeps): Promise<FastifyInsta
     } catch (error: unknown) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) })
     }
+  })
+
+  /**
+   * Answer a pending approval.
+   *
+   * Loopback and unauthenticated like the rest of this server, and reached
+   * either by `sentinel0 approve` or by the cloud relaying a dashboard button.
+   */
+  app.post('/runs/:runId/approval', async (request, reply) => {
+    const { runId } = request.params as { runId: string }
+    const { choice } = (request.body ?? {}) as { choice?: unknown }
+    if (!isApprovalChoice(choice)) {
+      return reply
+        .code(400)
+        .send({ error: `choice must be one of: ${APPROVAL_CHOICES.join(', ')}.` })
+    }
+    const result = await deps.approveRun(runId, choice)
+    if (!result.ok) {
+      return reply.code(409).send({ error: result.reason })
+    }
+    return { ok: true, runId, choice }
   })
 
   app.post('/runs/:runId/cancel', async (request, reply) => {

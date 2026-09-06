@@ -63,7 +63,7 @@ describe('POST /v1/runner/heartbeat', () => {
     )
 
     expect(response.statusCode).toBe(200)
-    const update = db.calls.find((call) => call.sql.includes('SET last_seen_at  = now()'))
+    const update = db.calls.find((call) => call.sql.includes('SET last_seen_at      = now()'))
     expect(update?.params).toEqual([
       'org_1',
       'cerebro',
@@ -71,6 +71,7 @@ describe('POST /v1/runner/heartbeat', () => {
       true,
       'hermes-4-70b',
       2,
+      null,
       null,
     ])
     await app.close()
@@ -87,8 +88,8 @@ describe('POST /v1/runner/heartbeat', () => {
     const response = await app.inject(beat({ name: 'cerebro' }))
     expect(response.statusCode).toBe(200)
 
-    const update = db.calls.find((call) => call.sql.includes('SET last_seen_at  = now()'))
-    expect(update?.params.slice(2)).toEqual([null, null, null, null, null])
+    const update = db.calls.find((call) => call.sql.includes('SET last_seen_at      = now()'))
+    expect(update?.params.slice(2)).toEqual([null, null, null, null, null, null])
     await app.close()
   })
 
@@ -121,13 +122,13 @@ describe('runner liveness', () => {
    * runner call means a runner too old to send a heartbeat still reads as
    * alive — which is the case that made every runner look stale before.
    */
-  it('is refreshed by any authenticated runner request', async () => {
+  it('is refreshed by any authenticated runner request that names the runner', async () => {
     const db = fakeDb()
     const app = await buildApp(db)
 
     await app.inject({
       method: 'GET',
-      url: '/v1/runner/routes',
+      url: '/v1/runner/routes?runner=cerebro',
       headers: { authorization: `Bearer ${RUNNER_KEY}` },
     })
 
@@ -136,7 +137,29 @@ describe('runner liveness', () => {
     const touch = db.calls.find((call) =>
       call.sql.includes('UPDATE runners SET last_seen_at = now()')
     )
-    expect(touch?.params).toEqual(['org_1'])
+    // Scoped to the runner that made the call. Updating every row in the org,
+    // as this once did, marks a machine that has been off for a week alive the
+    // moment any other runner polls.
+    expect(touch?.params).toEqual(['org_1', 'cerebro'])
+    await app.close()
+  })
+
+  it('is not refreshed by a call that does not name its runner', async () => {
+    const db = fakeDb()
+    const app = await buildApp(db)
+
+    await app.inject({
+      method: 'POST',
+      url: '/v1/runner/runs',
+      headers: { authorization: `Bearer ${RUNNER_KEY}` },
+      payload: { run: { id: 'pxr_1', status: 'queued' } },
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const touch = db.calls.find((call) =>
+      call.sql.includes('UPDATE runners SET last_seen_at = now()')
+    )
+    expect(touch).toBeUndefined()
     await app.close()
   })
 

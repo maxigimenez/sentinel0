@@ -8,6 +8,7 @@ import meFixture from './fixtures/me.json'
 import projectsFixture from './fixtures/projects.json'
 import routesFixture from './fixtures/routes.json'
 import runFixture from './fixtures/runs_run_1.json'
+import waitingRunFixture from './fixtures/runs_run_2.json'
 import runnersFixture from './fixtures/runners.json'
 import runsFixture from './fixtures/runs_limit_100.json'
 import slackFixture from './fixtures/integrations_slack.json'
@@ -30,6 +31,8 @@ const ROUTES: Record<string, unknown> = {
   '/v1/runs': runsFixture,
   '/v1/runs/run_1': runFixture,
   '/v1/runs/run_1/events': eventsFixture,
+  '/v1/runs/run_2': waitingRunFixture,
+  '/v1/runs/run_2/events': eventsFixture,
   '/v1/keys': keysFixture,
   '/v1/integrations/slack': slackFixture,
   '/v1/route-templates': { templates: [] },
@@ -161,6 +164,45 @@ describe('run detail', () => {
   it('offers cancellation only while the run is unfinished', async () => {
     await renderAt('/runs/run_1')
     expect(await screen.findByRole('button', { name: /cancel run/i })).toBeTruthy()
+  })
+
+  it('shows the hermes ids and the commands to tap into a run', async () => {
+    await renderAt('/runs/run_2')
+    expect(await screen.findByText('run_6a3a5d57840f44958c4331581a7768db')).toBeTruthy()
+    expect(screen.getByText('ses_9f2c')).toBeTruthy()
+    expect(screen.getByText(/sentinel0 logs --run run_2 --follow/)).toBeTruthy()
+  })
+
+  /**
+   * The whole point of the iteration: an agent that stops for permission has to
+   * be answerable from the one screen that works when you are not on the
+   * runner's network.
+   */
+  it('lets a waiting run be approved, and says what it is waiting for', async () => {
+    await renderAt('/runs/run_2')
+
+    expect(await screen.findByText('gh pr review 42 --approve')).toBeTruthy()
+    const approve = screen.getByRole('button', { name: /^approve$/i })
+
+    await userEvent.click(approve)
+
+    await waitFor(() => {
+      const posted = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((call) => call[1] as RequestInit | undefined)
+        .filter((init) => init?.method === 'POST')
+      expect(posted).toHaveLength(1)
+      // `session` rather than `once`: an agent stopped mid-task will ask again
+      // moments later, and clicking approve repeatedly is not consent.
+      expect(JSON.parse(String(posted[0]!.body))).toEqual({ choice: 'session' })
+    })
+  })
+
+  it('asks before denying, because a denial usually ends the run', async () => {
+    await renderAt('/runs/run_2')
+
+    await userEvent.click(await screen.findByRole('button', { name: /^deny$/i }))
+
+    expect(await screen.findByText(/Deny this request/i)).toBeTruthy()
   })
 })
 

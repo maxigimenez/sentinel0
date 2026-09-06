@@ -75,6 +75,27 @@ needs **no local clone** of any repository, and `ProjectConfig` has no `workspac
   both are hosted; the runner also serves an API, so an unqualified `api` would be
   ambiguous. Deployed to Railway as its own service; see `docs/dashboard.md`.
 
+### The cloud mirror
+
+The runner's SQLite is the source of truth for *decisions*; the cloud is the source of
+truth for *watching*, and is usually the only one reachable. So mirroring is durable and
+prompt rather than best-effort:
+
+- `MirrorOutbox` is backed by the `mirror_outbox` table and **drains on its own timer**,
+  woken by each enqueue. It used to be an in-memory array flushed once per poll cycle,
+  behind a 25-second long poll, and dropped on restart — so a finished run could read
+  "running" in the cloud indefinitely.
+- Run events ship **while the run is live**, batched by high-water id, not once at the
+  end. A half-hour run showed an empty log for half an hour.
+- On boot, `reconcileOrphans()` asks Hermes about every run a previous process left
+  unfinished: terminal there means settle it, still live means `Dispatcher.resume()`
+  takes it back — rebuilding the trigger event from the run record so outcomes still
+  apply and the in-progress marker is still cleared. Skipping this strands the run *and*
+  permanently occupies its agent, since the busy check counts exactly those rows.
+
+Delivery is at-least-once and every mirror write is an upsert, so a duplicate is
+harmless where a loss is not.
+
 ### Runtime state (`~/.sentinel0/`)
 
 | File | Purpose |
@@ -82,7 +103,7 @@ needs **no local clone** of any repository, and `ProjectConfig` has no `workspac
 | `config.json` | Cloud credentials, Hermes profiles and keys, secrets (v2 schema) |
 | `routes.json` | Last known good routes; the offline fallback, and the whole route table when no cloud is configured |
 | `running.json` | Pid and port of the running runner |
-| `sentinel0.db` | SQLite — runs, run events, dispatch ledger |
+| `sentinel0.db` | SQLite — runs, run events, dispatch ledger, observations, mirror outbox |
 | `runner.{stdout,stderr}.log` | Runner output |
 
 Override the directory with `SENTINEL0_DATA_DIR`.
@@ -99,6 +120,19 @@ progress, the poll is truth.** Hermes expires run event buffers after five minut
 a long run's stream ends while the run continues. Completion is decided exclusively by
 polling `GET /v1/runs/{id}`; stream failures are logged and swallowed.
 
+**Approvals are a wait state, not an outcome.** Hermes gates some tool calls behind a
+human decision. When the poll sees one, the adapter reports it (`onApprovalRequired`,
+carrying what is being asked where Hermes says, and the stream's last tool call where
+it does not) and *keeps polling*; answering it is `POST /v1/runs/{id}/approval` with
+`{"choice": "once" | "session" | "always" | "deny"}` — Hermes' vocabulary, not ours,
+and the fake server in `test/hermes/` validates it as the real gateway does. Two clocks
+run: `execution.timeoutSeconds` stops advancing while a person deliberates, and
+`execution.approvalTimeoutSeconds` (default one hour) bounds the deliberation, after
+which the run is denied and stopped. Returning `awaiting_approval` as a dispatch
+outcome — which this did — abandons a live run: nothing polls it again, its ticket
+keeps `sentinel0:in-progress` forever, and it holds its agent until someone cancels it
+by hand.
+
 ### Routing (`packages/orchestrator/src/routing/`)
 
 `trigger → match → target → execution → outcome`. `rule-engine.ts` is pure — no I/O,
@@ -114,6 +148,16 @@ Two invariants the dispatcher enforces:
    `sha1(routeId, triggerRef, triggerRevision)` in the SQLite `dispatch_ledger` before
    any work starts. `INSERT OR IGNORE` is the concurrency control. A failure before the
    agent was reached releases the claim so a fix can run.
+
+**Two GitHub identities, and only one of them is Sentinel0's.** The *runner's* own
+`gh` does all the polling, labelling and commenting; each *agent* authenticates as
+itself inside its Hermes profile, and Sentinel0 passes it no token — `createRun` sends
+prompt, instructions, session and model, nothing else. `HermesProfileConfig.githubLogin`
+is therefore the operator's *declaration* of which account a profile uses, verified by
+nothing, and it exists so a route can target an agent by GitHub identity. That gate
+matches the login against the item's assignees **or** its requested reviewers: checking
+reviewers alone made `pr_event` + `assigneesAdded` + a login target a route the API
+would happily save and that could never fire.
 
 `Dispatcher.dispatchPrompt()` is the one path around all of this: an operator's own
 prompt against one named agent, from the dashboard's *run agent* button. No rule is
@@ -150,17 +194,25 @@ its heartbeat, so the dashboard would report it stale for exactly as long as it 
 `cancel` and `resync` are awaited, because they must have taken effect before the next
 cycle reads what they changed.
 
-That poll also paces the runner's
-main loop, and `POST /v1/runner/heartbeat` rides on the same cycle — nothing can ask
-the runner how it is doing, so health is pushed or it does not exist. `last_seen_at` is
-additionally touched by any authenticated runner request, so liveness never depends on
-the runner remembering to report it.
+That poll also paces the runner's main loop, but **health does not ride on it**:
+`POST /v1/runner/heartbeat` runs on its own 15-second timer, because a cycle takes as
+long as the work in it and a busy runner used to look like a dead one against the
+90-second staleness window. Nothing can ask the runner how it is doing, so health is
+pushed or it does not exist; the heartbeat also carries per-agent status and a bounded
+tail of skipped routing decisions, neither of which the cloud could otherwise know.
+`last_seen_at` is additionally touched by any authenticated runner request that names
+its runner — the filter matters, since updating every row in the org marks a machine
+that has been off for a week alive the moment another runner polls.
 
 CORS on the user API must list its methods explicitly. `@fastify/cors` defaults to
 `GET,HEAD,POST`, which makes a browser's preflight refuse every DELETE and PUT while
 curl, sending no preflight, works perfectly.
 
 Migrations are plain `.sql` files applied in filename order, one transaction each.
+
+`DASHBOARD_URL` is optional and only used to deep-link a run from Slack. Without it the
+needs-approval message still names the `sentinel0 approve` command — a notification that
+says a decision is required and no way to make one is the failure this replaced.
 
 ## CI and releasing
 

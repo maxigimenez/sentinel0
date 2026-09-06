@@ -1,7 +1,22 @@
-import { RUN_STATUS, type Logger, type RunStatus, type RunUsage } from '@sentinel0/common'
+import {
+  APPROVAL_CHOICE,
+  DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+  RUN_LOG_KIND,
+  RUN_STATUS,
+  type ApprovalChoice,
+  type Logger,
+  type RunApprovalDetail,
+  type RunStatus,
+  type RunUsage,
+} from '@sentinel0/common'
 import type { HermesClient } from './client.js'
 import { mapHermesEvent, extractText } from './event-mapper.js'
-import { isHermesTerminalStatus, type HermesCapabilities, type HermesRunState } from './types.js'
+import {
+  isHermesTerminalStatus,
+  type HermesCapabilities,
+  type HermesPendingApproval,
+  type HermesRunState,
+} from './types.js'
 
 export interface HermesRunJob {
   /** Sentinel0 run id — used for log correlation, not sent to Hermes. */
@@ -12,13 +27,27 @@ export interface HermesRunJob {
   previousResponseId?: string
   model?: string | null
   timeoutSeconds: number
+  /** How long the run may sit at an approval gate before it is denied. */
+  approvalTimeoutSeconds?: number
   /**
    * Called the moment Hermes accepts the run, before any polling.
    *
    * This is what makes mid-run cancellation possible: the id has to be durable
    * from the first instant, not recorded once the run is already over.
    */
-  onRunCreated?: (hermesRunId: string) => void
+  onRunCreated?: (hermesRunId: string, sessionId?: string) => void
+  /** Called once each time the run stops at an approval gate. */
+  onApprovalRequired?: (detail: RunApprovalDetail) => void
+  /** Called once each time a gate is answered and the agent resumes. */
+  onApprovalResolved?: () => void
+}
+
+/** A run that already exists on Hermes and only needs following. */
+export interface HermesAttachJob extends Omit<
+  HermesRunJob,
+  'prompt' | 'onRunCreated' | 'sessionId' | 'previousResponseId'
+> {
+  hermesRunId: string
 }
 
 export interface HermesRunOutcome {
@@ -78,6 +107,15 @@ function toUsage(state: HermesRunState): RunUsage | undefined {
 export class HermesAdapter {
   private readonly pollIntervalMs: number
 
+  /**
+   * The last tool call seen on each run's stream.
+   *
+   * Kept because Hermes does not reliably say *what* it wants approved, and a
+   * gate with no description is nearly useless to whoever has to answer it.
+   * Keyed by Hermes run id and cleared when the run ends.
+   */
+  private readonly lastToolCalls = new Map<string, ToolCallSummary>()
+
   constructor(
     private readonly client: HermesClient,
     private readonly logger: Logger,
@@ -99,6 +137,41 @@ export class HermesAdapter {
     await this.client.stopRun(hermesRunId)
   }
 
+  /**
+   * Answer a gate. The poll loop notices the resulting status change on its own
+   * -- this deliberately does not try to drive the run forward itself, because
+   * the poll is the only thing that decides what a run is doing.
+   */
+  async approve(hermesRunId: string, choice: ApprovalChoice): Promise<void> {
+    await this.client.resolveApproval(hermesRunId, choice)
+  }
+
+  /** One status read, for deciding what a run left behind by a restart is doing. */
+  async describe(hermesRunId: string): Promise<HermesRunState> {
+    return this.client.getRun(hermesRunId)
+  }
+
+  /**
+   * Follows a run this process did not start.
+   *
+   * Identical to `run` from the poll onward -- it is the same loop -- but skips
+   * creation, because the agent is already working. This is what lets a runner
+   * restart cost nothing: the run is picked back up where it was rather than
+   * being abandoned in whatever state the crash caught it in.
+   */
+  async attach(job: HermesAttachJob, signal?: AbortSignal): Promise<HermesRunOutcome> {
+    const streamAbort = new AbortController()
+    const streaming = this.consumeStream(job.runId, job.hermesRunId, streamAbort.signal)
+
+    try {
+      return await this.pollUntilSettled({ ...job, prompt: '' }, job.hermesRunId, signal)
+    } finally {
+      streamAbort.abort()
+      this.lastToolCalls.delete(job.hermesRunId)
+      await streaming.catch(() => undefined)
+    }
+  }
+
   async run(job: HermesRunJob, signal?: AbortSignal): Promise<HermesRunOutcome> {
     const created = await this.client.createRun(
       {
@@ -116,7 +189,9 @@ export class HermesAdapter {
       throw new Error(`Hermes profile "${this.client.profile}" returned no run_id.`)
     }
 
-    job.onRunCreated?.(hermesRunId)
+    // The session id is what lets an operator attach to the agent mid-run, so
+    // record it as early as Hermes offers it rather than only once the run ends.
+    job.onRunCreated?.(hermesRunId, created.session_id)
     this.logger.info(
       `Hermes run ${hermesRunId} started on profile ${this.client.profile}`,
       job.runId
@@ -129,6 +204,7 @@ export class HermesAdapter {
       return await this.pollUntilSettled(job, hermesRunId, signal)
     } finally {
       streamAbort.abort()
+      this.lastToolCalls.delete(hermesRunId)
       // Surfaced inside consumeStream; awaited only so the task cannot outlive the run.
       await streaming.catch(() => undefined)
     }
@@ -144,6 +220,9 @@ export class HermesAdapter {
         const entry = mapHermesEvent(event)
         if (!entry) {
           continue
+        }
+        if (entry.kind === RUN_LOG_KIND.COMMAND) {
+          this.lastToolCalls.set(hermesRunId, { tool: entry.title, command: entry.message })
         }
         this.logger.event({
           runId,
@@ -173,8 +252,13 @@ export class HermesAdapter {
     hermesRunId: string,
     signal?: AbortSignal
   ): Promise<HermesRunOutcome> {
-    const deadline = Date.now() + job.timeoutSeconds * 1_000
+    const approvalBudgetMs =
+      (job.approvalTimeoutSeconds ?? DEFAULT_APPROVAL_TIMEOUT_SECONDS) * 1_000
+    let deadline = Date.now() + job.timeoutSeconds * 1_000
     let lastState: HermesRunState | undefined
+    // Non-null exactly while the run sits at a gate; the instant it opened is
+    // what separates "the agent is slow" from "a human has not answered yet".
+    let waitingSince: number | undefined
 
     for (;;) {
       if (signal?.aborted) {
@@ -182,7 +266,21 @@ export class HermesAdapter {
         return this.outcome(RUN_STATUS.CANCELED, hermesRunId, lastState, 'Canceled by operator.')
       }
 
-      if (Date.now() > deadline) {
+      if (waitingSince !== undefined) {
+        // The run deadline is deliberately not checked here: the agent is not
+        // working, so its budget must not burn while a person decides. The time
+        // spent waiting is credited back exactly when the gate closes.
+        if (Date.now() - waitingSince > approvalBudgetMs) {
+          await this.denyQuietly(hermesRunId, job.runId)
+          await this.stopQuietly(hermesRunId, job.runId)
+          return this.outcome(
+            RUN_STATUS.FAILED,
+            hermesRunId,
+            lastState,
+            `Approval was not answered within ${formatDuration(approvalBudgetMs)}; the run was denied and stopped.`
+          )
+        }
+      } else if (Date.now() > deadline) {
         await this.stopQuietly(hermesRunId, job.runId)
         return this.outcome(
           RUN_STATUS.FAILED,
@@ -208,11 +306,51 @@ export class HermesAdapter {
         return this.outcome(status, hermesRunId, lastState, lastState.error)
       }
 
-      if (lastState && mapHermesStatus(lastState.status) === RUN_STATUS.AWAITING_APPROVAL) {
-        return this.outcome(RUN_STATUS.AWAITING_APPROVAL, hermesRunId, lastState)
+      // An approval is a wait state, not an outcome. Leaving the loop here --
+      // as this once did -- abandons a live run: nothing re-polls it, nothing
+      // can answer it, and it holds its agent until someone cancels by hand.
+      const awaiting =
+        lastState !== undefined &&
+        mapHermesStatus(lastState.status) === RUN_STATUS.AWAITING_APPROVAL
+
+      if (awaiting && waitingSince === undefined) {
+        waitingSince = Date.now()
+        job.onApprovalRequired?.(this.approvalDetail(hermesRunId, lastState))
+      } else if (!awaiting && waitingSince !== undefined) {
+        deadline += Date.now() - waitingSince
+        waitingSince = undefined
+        job.onApprovalResolved?.()
       }
 
       await delay(this.pollIntervalMs, signal)
+    }
+  }
+
+  /**
+   * What the agent is asking for, best effort.
+   *
+   * Hermes may or may not describe the pending call in its run state, so the
+   * stream's last tool call stands in when it does not. A gate with no
+   * description at all is still worth showing -- an operator can open the run
+   * log -- so this always returns something.
+   */
+  private approvalDetail(hermesRunId: string, state?: HermesRunState): RunApprovalDetail {
+    const pending = state?.pending_approval ?? state?.approval
+    const fromState = pending ? describeApproval(pending) : undefined
+    return {
+      ...(fromState ?? this.lastToolCalls.get(hermesRunId) ?? {}),
+      requestedAt: Date.now(),
+    }
+  }
+
+  private async denyQuietly(hermesRunId: string, runId: string): Promise<void> {
+    try {
+      await this.client.resolveApproval(hermesRunId, APPROVAL_CHOICE.DENY)
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to deny the lapsed approval on ${hermesRunId}: ${errorMessage(error)}`,
+        runId
+      )
     }
   }
 
@@ -243,6 +381,37 @@ export class HermesAdapter {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+interface ToolCallSummary {
+  tool?: string
+  command?: string
+  arguments?: string
+}
+
+/** Reads whichever of Hermes' several spellings of a pending call arrived. */
+function describeApproval(pending: HermesPendingApproval): ToolCallSummary | undefined {
+  const tool = pending.tool ?? pending.tool_name
+  const command = pending.command
+  const args = extractText(pending.arguments ?? pending.input)
+  if (!tool && !command && !args) {
+    return undefined
+  }
+  return {
+    ...(tool ? { tool } : {}),
+    ...(command ? { command } : {}),
+    ...(args ? { arguments: args } : {}),
+  }
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) {
+    return `${minutes}m`
+  }
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`
 }
 
 async function delay(ms: number, signal?: AbortSignal): Promise<void> {

@@ -1,6 +1,7 @@
 import { TICKET_PROVIDER, type AppConfig } from '@sentinel0/common'
 import type { LocalExecutor } from '@sentinel0/common/executor'
 import { HermesClient } from '../hermes/client.js'
+import { logger } from '../logger.js'
 
 /**
  * Fail-fast checks run at boot and on every reload.
@@ -34,6 +35,17 @@ export async function validateRuntimeRequirements(
     (project) => project.provider === TICKET_PROVIDER.GITHUB
   )
   if (requiresGitHub) {
+    // Not fatal, but worth saying out loud: without a githubLogin an agent
+    // cannot be targeted by GitHub identity, so every route that names it is
+    // dead -- and a dead route reports nothing at all.
+    const anonymous = enabled.filter((profile) => !profile.githubLogin)
+    if (anonymous.length > 0) {
+      logger.warn(
+        `No githubLogin set for ${anonymous.map((p) => `"${p.name}"`).join(', ')}. ` +
+          'PR routes that target an agent by GitHub account cannot match it.'
+      )
+    }
+
     const check = await executor.executeCommand(['gh', 'auth', 'status'], { cwd: process.cwd() })
     if (check.exitCode === 127) {
       throw new Error('GitHub CLI not found. Install gh and run "gh auth login".')

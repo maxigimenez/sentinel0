@@ -1,11 +1,17 @@
 import os from 'node:os'
 import pLimit from 'p-limit'
 import {
+  RUN_STATUS,
+  isApprovalChoice,
+  isTerminalRunStatus,
   sleep,
   type AgentDescriptor,
   type AppConfig,
+  type ApprovalChoice,
   type ProjectConfig,
   type RoutingRule,
+  type RunRecord,
+  type RunStatus,
   type TriggerEvent,
 } from '@sentinel0/common'
 import { HostExecutor } from '@sentinel0/common/executor'
@@ -13,11 +19,18 @@ import { loadConfig, resolveDataDir } from './config-loader.js'
 import { getDatabase } from './database.js'
 import { logger, setLoggerDatabase, setLogLevels } from './logger.js'
 import { createRunId } from './run-id.js'
-import { HermesAdapter } from './hermes/adapter.js'
+import { HermesAdapter, mapHermesStatus } from './hermes/adapter.js'
+import type { HermesRunState } from './hermes/types.js'
 import { createClientForProfile, discoverAgents } from './hermes/discovery.js'
 import { Dispatcher, type OutcomeHandlers, type PromptRunRequest } from './routing/dispatcher.js'
 import { RunLifecycle } from './routing/run-lifecycle.js'
-import { CloudClient, MirrorOutbox, type RunnerCommand } from './cloud/client.js'
+import {
+  CloudClient,
+  MirrorOutbox,
+  type AgentHealth,
+  type RunnerCommand,
+  type SkipReport,
+} from './cloud/client.js'
 import {
   loadCachedProjects,
   loadCachedRoutes,
@@ -30,6 +43,26 @@ import { validateRuntimeRequirements } from './runtime/preflight.js'
 
 /** Fallback cadence when there is no cloud to long-poll against. */
 const OFFLINE_POLL_INTERVAL_MS = 20_000
+
+/**
+ * How many recent skip decisions ride along with the heartbeat.
+ *
+ * Bounded because this is a diagnostic tail, not a log: a runner watching a
+ * busy repository skips most of what it sees, every cycle, forever.
+ */
+const RECENT_SKIP_LIMIT = 10
+
+/** How often a live run's new transcript lines are pushed to the cloud. */
+const EVENT_MIRROR_INTERVAL_MS = 2_000
+
+/**
+ * Heartbeat cadence.
+ *
+ * Deliberately independent of the poll cycle, whose length is however long the
+ * work in it takes. The cloud calls a runner stale after 90 seconds, so this
+ * gives six misses of margin instead of the two a cycle-paced heartbeat gave.
+ */
+const HEARTBEAT_INTERVAL_MS = 15_000
 
 /**
  * Outcome handlers for a run with no tracker item behind it.
@@ -45,6 +78,18 @@ const NO_OUTCOMES: OutcomeHandlers = {
 }
 
 const RUNNER_VERSION = process.env.SENTINEL0_VERSION ?? '0.2.0'
+
+/**
+ * Why an approval could not be delivered.
+ *
+ * Approvals fail for mundane, explicable reasons -- the gate already lapsed,
+ * the run is not waiting, the profile is gone -- and whoever pressed the button
+ * is owed the reason rather than a generic failure.
+ */
+export interface ApprovalResult {
+  ok: boolean
+  reason?: string
+}
 
 interface Runtime {
   config: AppConfig
@@ -210,7 +255,13 @@ async function main(): Promise<void> {
   await validateRuntimeRequirements(config, executor)
 
   const cloud = config.cloud ? new CloudClient(config.cloud) : undefined
-  const outbox = cloud ? new MirrorOutbox(cloud, (message) => logger.warn(message)) : undefined
+  const outbox = cloud
+    ? new MirrorOutbox(cloud, db, (message: string) => logger.warn(message))
+    : undefined
+  // Whatever the last process did not manage to send goes out now, before any
+  // new work is collected -- a restart is precisely when the cloud is most out
+  // of date.
+  outbox?.start()
 
   if (cloud) {
     try {
@@ -249,6 +300,29 @@ async function main(): Promise<void> {
     logger.warn('No routes loaded, so no trigger can start an agent. POST /v1/routes')
   }
 
+  /*
+   * How much of each run's transcript the cloud already has.
+   *
+   * Shipping the whole log once, at the end, meant a half-hour run showed an
+   * empty event list in the dashboard for half an hour -- while the run detail
+   * screen polled it every ten seconds. Batching by high-water id instead sends
+   * the same rows, just while they still matter.
+   */
+  const mirroredEventIds = new Map<string, number>()
+
+  const mirrorNewEvents = (runId: string): void => {
+    if (!outbox) {
+      return
+    }
+    const since = mirroredEventIds.get(runId) ?? 0
+    const rows = db.listRunEventsSince(runId, since)
+    if (rows.length === 0) {
+      return
+    }
+    mirroredEventIds.set(runId, rows[rows.length - 1].id)
+    outbox.enqueue({ kind: 'events', runId, events: rows.map((row) => row.entry) })
+  }
+
   // Mirroring runs upward is what populates cloud run history and, through it,
   // fires the org's Slack notifications. It goes through the outbox so a cloud
   // outage degrades reporting rather than stalling a run.
@@ -256,17 +330,40 @@ async function main(): Promise<void> {
     created: (run) => outbox?.enqueue({ kind: 'run', run }),
     changed: (run) => outbox?.enqueue({ kind: 'run-update', run }),
     settled: (run) => {
-      // The transcript ships once, when the run ends. Streaming every event as
-      // it happens would multiply requests by the length of the run for output
-      // nobody reads until it is over.
-      const events = db.listRunEvents(run.id, { limit: 2000 })
-      if (events.length > 0) {
-        outbox?.enqueue({ kind: 'events', runId: run.id, events })
-      }
+      // A final sweep for anything the streaming mirror had not reached yet.
+      // Events are shipped as they happen (see mirrorNewEvents); this closes
+      // the gap between the last batch and the run ending.
+      mirrorNewEvents(run.id)
+      mirroredEventIds.delete(run.id)
     },
   })
   const limit = pLimit(config.concurrency)
   const inFlight = new Map<string, AbortController>()
+
+  /*
+   * Routing decisions that produced no run.
+   *
+   * "The agent was busy, so your pull request is waiting" is the single most
+   * useful thing this system can say when it appears to have done nothing, and
+   * until now it said it only to a log file on the runner's own disk.
+   */
+  const recentSkips: SkipReport[] = []
+  const recordSkip = (skip: SkipReport): void => {
+    recentSkips.push(skip)
+    if (recentSkips.length > RECENT_SKIP_LIMIT) {
+      recentSkips.splice(0, recentSkips.length - RECENT_SKIP_LIMIT)
+    }
+  }
+
+  // Live runs push their transcript upward on their own cadence, independent of
+  // the poll loop, so watching a run from the dashboard shows what is happening
+  // rather than what happened.
+  const eventMirrorTimer = setInterval(() => {
+    for (const runId of inFlight.keys()) {
+      mirrorNewEvents(runId)
+    }
+  }, EVENT_MIRROR_INTERVAL_MS)
+  eventMirrorTimer.unref()
 
   let services = buildProviderServices(config, executor)
 
@@ -317,6 +414,132 @@ async function main(): Promise<void> {
     return false
   }
 
+  /**
+   * Answers a pending approval gate on the Hermes side.
+   *
+   * Nothing is written locally: the adapter is still polling this run, so it
+   * sees the resulting status change and drives the lifecycle itself. Recording
+   * "approved" here as well would let the two disagree, and the poll is the one
+   * that is right.
+   */
+  const approveRun = async (runId: string, choice: ApprovalChoice): Promise<ApprovalResult> => {
+    const run = db.getRun(runId)
+    if (!run) {
+      return { ok: false, reason: `Run "${runId}" is not known to this runner.` }
+    }
+    if (run.status !== RUN_STATUS.AWAITING_APPROVAL) {
+      return { ok: false, reason: `Run "${runId}" is ${run.status}, not awaiting approval.` }
+    }
+    if (!run.hermesRunId) {
+      return {
+        ok: false,
+        reason: `Run "${runId}" never reached Hermes; there is nothing to answer.`,
+      }
+    }
+    const adapter = runtime.adapters.get(run.agentProfile)
+    if (!adapter) {
+      return { ok: false, reason: `No enabled Hermes profile named "${run.agentProfile}".` }
+    }
+
+    try {
+      await adapter.approve(run.hermesRunId, choice)
+    } catch (error: unknown) {
+      // Worth saying plainly: this is what a gate that has already lapsed looks
+      // like, and the operator needs to know the run is not coming back.
+      const reason = errorMessage(error)
+      logger.warn(`Approval of ${runId} (${choice}) was rejected by Hermes: ${reason}`, runId)
+      return { ok: false, reason }
+    }
+
+    logger.info(`Approval of ${runId} answered "${choice}"`, runId)
+    return { ok: true }
+  }
+
+  /**
+   * Records a run that finished while this process was not watching.
+   *
+   * No outcome handlers run here: the tracker item was already labelled by
+   * whoever started the run, and re-deriving a comment from a transcript this
+   * process never saw would be worse than saying nothing.
+   */
+  const settleFromHermes = (runId: string, status: RunStatus, state: HermesRunState): void => {
+    if (status === RUN_STATUS.COMPLETED) {
+      lifecycle.completed(runId, 'Completed while the runner was restarting.')
+    } else if (status === RUN_STATUS.CANCELED) {
+      lifecycle.canceled(runId, 'Canceled while the runner was restarting.')
+    } else {
+      lifecycle.failed(runId, state.error ?? 'Failed while the runner was restarting.')
+    }
+  }
+
+  const resumeRun = async (run: RunRecord, adapter: HermesAdapter): Promise<void> => {
+    const route = runtime.routes.find((candidate) => candidate.id === run.routeId)
+    const project = runtime.projects.find((candidate) => candidate.id === run.projectId)
+    const dispatcher = project
+      ? dispatcherFor(project)
+      : new Dispatcher({
+          db,
+          logger,
+          lifecycle,
+          outcomes: NO_OUTCOMES,
+          adapters: runtime.adapters,
+          agents: runtime.agents,
+          newRunId: createRunId,
+          inFlight,
+        })
+
+    logger.info(`Re-adopting run ${run.id} still live on Hermes as ${run.hermesRunId}`, run.id)
+    await dispatcher.resume(run, adapter, route)
+  }
+
+  /**
+   * Re-adopts or settles the runs a previous process left in flight.
+   *
+   * Without this every restart strands its runs: they stay `running` or
+   * `awaiting_approval` in SQLite and in the cloud forever, the dashboard shows
+   * phantom work, and -- worse -- each one permanently occupies its agent,
+   * because the busy check counts exactly these rows.
+   */
+  const reconcileOrphans = async (): Promise<void> => {
+    const orphans = db.listUnfinishedRuns()
+    if (orphans.length === 0) {
+      return
+    }
+    logger.info(`Reconciling ${orphans.length} run(s) left behind by a previous process.`)
+
+    for (const run of orphans) {
+      if (!run.hermesRunId) {
+        lifecycle.failed(run.id, 'The runner restarted before this run reached Hermes.')
+        continue
+      }
+      const adapter = runtime.adapters.get(run.agentProfile)
+      if (!adapter) {
+        lifecycle.failed(
+          run.id,
+          `The runner restarted and Hermes profile "${run.agentProfile}" is no longer enabled.`
+        )
+        continue
+      }
+
+      try {
+        const state = await adapter.describe(run.hermesRunId)
+        const status = mapHermesStatus(state.status)
+        if (isTerminalRunStatus(status)) {
+          settleFromHermes(run.id, status, state)
+        } else {
+          // Still alive over there. Take the run back rather than killing work
+          // that is going fine.
+          void resumeRun(run, adapter)
+        }
+      } catch (error: unknown) {
+        lifecycle.failed(
+          run.id,
+          `The runner restarted and Hermes no longer knows this run: ${errorMessage(error)}`
+        )
+      }
+    }
+  }
+
   const fastify = await createApiServer({
     getConfig: () => runtime.config,
     getProjects: () => runtime.projects,
@@ -324,6 +547,7 @@ async function main(): Promise<void> {
     getRoutes: () => runtime.routes,
     reload,
     cancelRun,
+    approveRun,
     db,
     dataDir,
   })
@@ -348,6 +572,7 @@ async function main(): Promise<void> {
           tally.dispatched += 1
         } else if (decision.outcome === 'skipped') {
           tally.skipped[decision.reason] = (tally.skipped[decision.reason] ?? 0) + 1
+          recordSkip({ reason: decision.reason, ref: event.ref, at: Date.now() })
         } else {
           tally.failed += 1
         }
@@ -409,6 +634,21 @@ async function main(): Promise<void> {
         await cancelRun(runId)
         break
       }
+      case 'approve': {
+        const runId = String(command.payload.runId ?? '')
+        const choice = command.payload.choice
+        if (!runId || !isApprovalChoice(choice)) {
+          logger.warn('Ignoring approval command with no run id or an unknown choice.')
+          return
+        }
+        logger.info(`Cloud requested "${choice}" on the approval for ${runId}`)
+        // Awaited: the poll loop's next cycle reads the status this changes.
+        const result = await approveRun(runId, choice)
+        if (!result.ok) {
+          logger.warn(`Approval of ${runId} was not delivered: ${result.reason}`)
+        }
+        break
+      }
       case 'resync': {
         logger.info('Cloud requested a resync')
         await reload()
@@ -464,6 +704,31 @@ async function main(): Promise<void> {
    * failure here is logged at debug and otherwise ignored: losing a heartbeat
    * degrades an indicator, and must never interrupt dispatching.
    */
+  /**
+   * What each agent is doing right now.
+   *
+   * Derived from this process's own in-flight map rather than from run rows,
+   * because rows are what go stale. An agent the cloud believes is busy while
+   * the runner knows it is idle is the failure this exists to prevent.
+   */
+  const agentHealth = (): AgentHealth[] =>
+    runtime.agents.map((agent) => {
+      const run = db
+        .listRuns({ limit: 20 })
+        .find(
+          (candidate) =>
+            candidate.agentProfile === agent.profile && !isTerminalRunStatus(candidate.status)
+        )
+      if (!run) {
+        return { profile: agent.profile, status: 'idle' }
+      }
+      return {
+        profile: agent.profile,
+        status: run.status === RUN_STATUS.AWAITING_APPROVAL ? 'awaiting_approval' : 'busy',
+        runId: run.id,
+      }
+    })
+
   const sendHeartbeat = async (): Promise<void> => {
     if (!cloud) {
       return
@@ -476,6 +741,8 @@ async function main(): Promise<void> {
         hermesDetail: hermes.detail,
         activeRuns: inFlight.size,
         lastError: lastCycleError,
+        agents: agentHealth(),
+        skips: recentSkips.slice(-RECENT_SKIP_LIMIT),
       })
       if (heartbeatFailing) {
         logger.info('Heartbeat restored.')
@@ -492,10 +759,22 @@ async function main(): Promise<void> {
     }
   }
 
+  // Health rides its own timer rather than the cycle's. A cycle takes as long
+  // as the work in it, so a busy runner used to look like a dead one -- and the
+  // cycle that threw is exactly the one whose error must still be reported.
+  const heartbeatTimer = setInterval(() => {
+    void sendHeartbeat()
+  }, HEARTBEAT_INTERVAL_MS)
+  heartbeatTimer.unref()
+  await sendHeartbeat()
+
+  // Runs left behind by a previous process are picked back up before any new
+  // trigger is collected -- one of them may still hold the agent a new trigger
+  // would target.
+  await reconcileOrphans()
+
   for (;;) {
     try {
-      await outbox?.flush()
-
       // Projects and routes are cloud-owned, so a change made in the dashboard
       // has to reach a long-running runner without anyone restarting it. Two
       // small GETs per cycle is a rounding error next to the poll they pace.
@@ -542,10 +821,6 @@ async function main(): Promise<void> {
       lastCycleError = errorMessage(error)
       logger.error(`Poll cycle error: ${lastCycleError}`)
     }
-
-    // Outside the try, so a cycle that threw still reports — that is precisely
-    // the cycle whose error an operator needs to see on the dashboard.
-    await sendHeartbeat()
 
     // The long poll doubles as the loop's pacing: it returns as soon as a human
     // queues something, and otherwise costs one held connection per window.

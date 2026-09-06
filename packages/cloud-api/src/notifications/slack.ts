@@ -55,6 +55,19 @@ export function buildSlackMessage(
     lines.push('', detail.length > 600 ? `${detail.slice(0, 600)}…` : detail)
   }
 
+  // A run waiting on a person is the one message that must say what to do about
+  // it. Without this it announced a decision was needed and named no way to
+  // make one, which is how an agent ends up blocked for an afternoon.
+  if (event === 'run.needs_approval') {
+    const asked = run.approvalDetail?.command ?? run.approvalDetail?.arguments
+    const tool = run.approvalDetail?.tool
+    if (asked || tool) {
+      const wants = asked ? truncate(asked, 200) : tool!
+      lines.push('', `Wants to run: \`${wants}\``)
+    }
+    lines.push('', unblockHint(run))
+  }
+
   const text = lines.join('\n')
 
   // The agent's avatar goes *inside* the message, as a Block Kit accessory --
@@ -80,6 +93,27 @@ export function buildSlackMessage(
       },
     ],
   }
+}
+
+/**
+ * Where to go to answer a gate.
+ *
+ * The dashboard link needs `DASHBOARD_URL`, which nothing in cloud-api had --
+ * the browser learns the API's address, never the other way round. Without it
+ * configured the CLI fallback still tells an operator exactly what to type,
+ * which beats the silence this replaces.
+ */
+function unblockHint(run: RunRecord): string {
+  const base = process.env.DASHBOARD_URL?.replace(/\/+$/, '')
+  const cli = `\`sentinel0 approve ${run.id}\` · \`sentinel0 approve ${run.id} --deny\``
+  return base
+    ? `Approve or deny: <${base}/runs/${run.id}|open in the dashboard> · ${cli}`
+    : `Approve or deny: ${cli}`
+}
+
+function truncate(value: string, max: number): string {
+  const flat = value.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
 function verb(event: NotificationEvent): string {
@@ -183,4 +217,59 @@ export async function notifyRunEvent(
       )
       .catch(() => undefined)
   }
+}
+
+/**
+ * Tells each org about runners that have stopped checking in.
+ *
+ * `runner.stale` has been a declared notification, and a default-enabled one,
+ * since the first migration -- and nothing ever emitted it. A runner is the
+ * only thing that can start an agent, so its going quiet is the single event
+ * most worth interrupting someone about, and it was the one event that could
+ * not reach anybody.
+ *
+ * Announced once per outage: `stale_notified_at` is set here and cleared by the
+ * next heartbeat, so a machine that is off for a week does not post every pass.
+ */
+export async function sweepStaleRunners(db: Database): Promise<number> {
+  const { rows } = await db.query<{
+    org_id: string
+    name: string
+    last_seen_at: string
+    webhook_url: string
+    events: string[]
+  }>(
+    `UPDATE runners r
+        SET stale_notified_at = now()
+       FROM slack_integrations s
+      WHERE s.org_id = r.org_id
+        AND s.enabled
+        AND s.events @> ARRAY['runner.stale']
+        AND r.stale_notified_at IS NULL
+        AND r.last_seen_at < now() - interval '90 seconds'
+      RETURNING r.org_id, r.name, r.last_seen_at, s.webhook_url, s.events`
+  )
+
+  for (const row of rows) {
+    const quiet = Math.round((Date.now() - new Date(row.last_seen_at).getTime()) / 60_000)
+    const text = [
+      `${ICONS['runner.stale']} *${row.name}* ${verb('runner.stale')}`,
+      `No heartbeat for ${quiet}m. Nothing will dispatch until it is back.`,
+    ].join('\n')
+
+    try {
+      await fetch(row.webhook_url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, mrkdwn: true }),
+        signal: AbortSignal.timeout(10_000),
+      })
+    } catch {
+      // Best effort, like every other notification here. The flag stays set:
+      // re-announcing a known-dead runner on the next pass is worse than
+      // missing one message about it.
+    }
+  }
+
+  return rows.length
 }

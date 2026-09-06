@@ -1,5 +1,14 @@
 import { buildApp } from './app.js'
 import { closePool, getPool, migrate } from './db.js'
+import { sweepStaleRunners } from './notifications/slack.js'
+
+/**
+ * How often runners are checked for having gone quiet.
+ *
+ * Half the 90-second staleness window, so an outage is announced within a
+ * minute of the dashboard already showing it.
+ */
+const STALE_SWEEP_INTERVAL_MS = 45_000
 
 async function main(): Promise<void> {
   const db = getPool()
@@ -17,6 +26,13 @@ async function main(): Promise<void> {
 
   // Railway routes to the container's PORT on all interfaces.
   await app.listen({ port, host: '0.0.0.0' })
+
+  const staleSweep = setInterval(() => {
+    void sweepStaleRunners(db).catch((error: unknown) => {
+      app.log.warn({ error }, 'Stale runner sweep failed')
+    })
+  }, STALE_SWEEP_INTERVAL_MS)
+  staleSweep.unref()
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info(`${signal} received; shutting down.`)

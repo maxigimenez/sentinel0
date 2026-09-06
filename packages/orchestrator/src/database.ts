@@ -3,6 +3,7 @@ import path from 'node:path'
 import {
   RUN_STATUS,
   isTerminalRunStatus,
+  type RunApprovalDetail,
   type RunLogEntry,
   type RunRecord,
   type RunStatus,
@@ -28,6 +29,14 @@ export function resolveDbPath(): string {
   return path.resolve(process.cwd(), 'sentinel0.db')
 }
 
+/** Idempotent `ALTER TABLE ... ADD COLUMN`, for databases that already exist. */
+function addColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+  if (!columns.some((existing) => existing.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  }
+}
+
 function migrate(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS runs (
@@ -44,6 +53,7 @@ function migrate(db: DatabaseSync): void {
       status TEXT NOT NULL,
       hermesRunId TEXT,
       hermesSessionId TEXT,
+      approvalDetail TEXT,
       summary TEXT,
       error TEXT,
       usage TEXT,
@@ -99,6 +109,28 @@ function migrate(db: DatabaseSync): void {
     );
   `)
 
+  /*
+   * The write-ahead log for the cloud mirror.
+   *
+   * Previously the outbox was an in-memory array drained once per poll cycle,
+   * so a restart, a crash, or a backlog over 500 items silently dropped
+   * whatever had not been sent -- and the cloud, which is the only view of this
+   * runner from off its network, kept showing runs that had long since
+   * finished. Durable here, delivered by its own loop, at-least-once.
+   */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mirror_outbox (
+      seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind      TEXT NOT NULL,
+      payload   TEXT NOT NULL,
+      createdAt INTEGER NOT NULL
+    );
+  `)
+
+  // Existing installs predate these columns; `CREATE TABLE IF NOT EXISTS` alone
+  // would leave them behind on every machine that has already run.
+  addColumn(db, 'runs', 'approvalDetail', 'TEXT')
+
   db.exec('CREATE INDEX IF NOT EXISTS idx_runs_updated ON runs(updatedAt DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updatedAt DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agentProfile, status)')
@@ -119,6 +151,7 @@ interface RunRow {
   status: string
   hermesRunId: string | null
   hermesSessionId: string | null
+  approvalDetail: string | null
   summary: string | null
   error: string | null
   usage: string | null
@@ -143,6 +176,9 @@ function toRun(row: RunRow): RunRecord {
     status: row.status as RunStatus,
     hermesRunId: row.hermesRunId ?? undefined,
     hermesSessionId: row.hermesSessionId ?? undefined,
+    approvalDetail: row.approvalDetail
+      ? (JSON.parse(row.approvalDetail) as RunApprovalDetail)
+      : undefined,
     summary: row.summary ?? undefined,
     error: row.error ?? undefined,
     usage: row.usage ? (JSON.parse(row.usage) as RunUsage) : undefined,
@@ -163,6 +199,8 @@ export interface RunPatch {
   status?: RunStatus
   hermesRunId?: string
   hermesSessionId?: string
+  /** `null` clears a gate that has been answered; `undefined` leaves it alone. */
+  approvalDetail?: RunApprovalDetail | null
   summary?: string
   error?: string
   usage?: RunUsage
@@ -249,6 +287,14 @@ export class Sentinel0Database {
     assign('startedAt', patch.startedAt)
     assign('endedAt', patch.endedAt)
     assign('usage', patch.usage ? JSON.stringify(patch.usage) : undefined)
+    assign(
+      'approvalDetail',
+      patch.approvalDetail === undefined
+        ? undefined
+        : patch.approvalDetail === null
+          ? null
+          : JSON.stringify(patch.approvalDetail)
+    )
 
     params.push(id)
     this.db.prepare(`UPDATE runs SET ${sets.join(', ')} WHERE id = ?`).run(...params)
@@ -323,6 +369,41 @@ export class Sentinel0Database {
       kind: row.kind as RunLogEntry['kind'],
       source: row.source as RunLogEntry['source'],
       groupId: (row.groupId as string | null) ?? undefined,
+    }))
+  }
+
+  /**
+   * Events recorded after `afterId`, with their ids.
+   *
+   * The id is the high-water mark the cloud mirror advances on. Timestamps
+   * cannot serve: two events inside the same millisecond are common on a busy
+   * stream, and `>= since` would either resend or skip them.
+   */
+  listRunEventsSince(
+    runId: string,
+    afterId: number,
+    limit = 200
+  ): Array<{ id: number; entry: RunLogEntry }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, title, message, icon, level, timestamp, kind, source, groupId
+         FROM run_events WHERE runId = ? AND id > ?
+         ORDER BY id ASC LIMIT ?`
+      )
+      .all(runId, afterId, Math.min(Math.max(limit, 1), 2000)) as Array<Record<string, unknown>>
+
+    return rows.map((row) => ({
+      id: Number(row.id),
+      entry: {
+        title: (row.title as string | null) ?? undefined,
+        message: row.message as string,
+        icon: row.icon as string,
+        level: row.level as RunLogEntry['level'],
+        timestamp: row.timestamp as number,
+        kind: row.kind as RunLogEntry['kind'],
+        source: row.source as RunLogEntry['source'],
+        groupId: (row.groupId as string | null) ?? undefined,
+      },
     }))
   }
 
@@ -433,6 +514,66 @@ export class Sentinel0Database {
   /** Drops ledger rows whose runs have long since finished. */
   pruneDispatchLedger(olderThan: number): number {
     const result = this.db.prepare('DELETE FROM dispatch_ledger WHERE createdAt < ?').run(olderThan)
+    return Number(result.changes)
+  }
+
+  // ── Cloud mirror outbox ────────────────────────────────────
+
+  /**
+   * Records one pending mirror write.
+   *
+   * Returns the assigned sequence so the drain can delete exactly what it sent
+   * rather than truncating a queue that may have grown underneath it.
+   */
+  enqueueMirror(kind: string, payload: unknown, now: number = Date.now()): number {
+    const result = this.db
+      .prepare('INSERT INTO mirror_outbox (kind, payload, createdAt) VALUES (?, ?, ?)')
+      .run(kind, JSON.stringify(payload), now)
+    return Number(result.lastInsertRowid)
+  }
+
+  /** The oldest pending writes, in the order they were made. */
+  peekMirror(limit = 50): Array<{ seq: number; kind: string; payload: unknown }> {
+    const rows = this.db
+      .prepare('SELECT seq, kind, payload FROM mirror_outbox ORDER BY seq ASC LIMIT ?')
+      .all(Math.min(Math.max(limit, 1), 500)) as unknown as Array<{
+      seq: number
+      kind: string
+      payload: string
+    }>
+    return rows.map((row) => ({
+      seq: Number(row.seq),
+      kind: row.kind,
+      payload: JSON.parse(row.payload) as unknown,
+    }))
+  }
+
+  ackMirror(seq: number): void {
+    this.db.prepare('DELETE FROM mirror_outbox WHERE seq = ?').run(seq)
+  }
+
+  countMirrorPending(): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS count FROM mirror_outbox').get() as {
+      count: number
+    }
+    return row.count
+  }
+
+  /**
+   * Drops the oldest pending writes when the backlog is absurd.
+   *
+   * A cloud that has been unreachable for days is not worth an unbounded local
+   * file, but unlike the old in-memory queue this is a deliberate, reported
+   * decision rather than something that happens on every restart.
+   */
+  trimMirror(keep: number): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM mirror_outbox WHERE seq NOT IN (
+           SELECT seq FROM mirror_outbox ORDER BY seq DESC LIMIT ?
+         )`
+      )
+      .run(Math.max(keep, 1))
     return Number(result.changes)
   }
 

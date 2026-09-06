@@ -17,12 +17,24 @@ import type { RunStatus } from '../api/types.js'
 
 const ACTIVE: RunStatus[] = ['running', 'queued', 'awaiting_approval']
 
+/** The dispatcher's own words, said in a way that suggests what to do next. */
+const SKIP_REASONS: Record<string, string> = {
+  'no-route': 'no route matched it',
+  duplicate: 'already handled at this revision',
+  'unknown-agent': 'the route names an agent this runner does not have',
+  'agent-busy': 'its agent was busy; it will be retried',
+}
+
 export function Overview(): ReactNode {
   const key = useKey()
   const { toast } = useToast()
   const runs = useResource((k, signal) => api.runs(k, { limit: 100 }, signal), [], {
     pollMs: 15_000,
   })
+  // Runners carry the tail of routing decisions that produced no run. Those
+  // never left the runner's own stdout before, so "sentinel0 appears to have
+  // ignored my pull request" had no answer anywhere in the product.
+  const runners = useResource((k, signal) => api.runners(k, signal), [], { pollMs: 30_000 })
 
   // Elapsed times are derived from `now`, so a running row has to be re-rendered
   // on a clock of its own — the run data itself has not changed.
@@ -33,6 +45,10 @@ export function Overview(): ReactNode {
   }, [])
 
   const all = runs.data ?? []
+  const skips = (runners.data ?? [])
+    .flatMap((runner) => runner.recent_skips ?? [])
+    .sort((a, b) => b.at - a.at)
+    .slice(0, 5)
   const count = (status: RunStatus): number => all.filter((run) => run.status === status).length
   const active = all.filter((run) => ACTIVE.includes(run.status))
 
@@ -110,6 +126,18 @@ export function Overview(): ReactNode {
                 note="in the last 100 runs"
               />
             </div>
+
+            {skips.length > 0 ? (
+              <Alert tone="info" title="Recently skipped">
+                <ul className="px-skips">
+                  {skips.map((skip) => (
+                    <li key={`${skip.ref}-${skip.at}`}>
+                      <code>{skip.ref}</code> — {SKIP_REASONS[skip.reason] ?? skip.reason}
+                    </li>
+                  ))}
+                </ul>
+              </Alert>
+            ) : null}
 
             {count('failed') > 0 ? (
               <Alert tone="warning" title="Some runs failed">

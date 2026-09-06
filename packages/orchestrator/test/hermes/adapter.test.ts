@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RUN_LOG_KIND, RUN_STATUS, type Logger, type RunLogKind } from '@sentinel0/common'
+import {
+  RUN_LOG_KIND,
+  RUN_STATUS,
+  type Logger,
+  type RunApprovalDetail,
+  type RunLogKind,
+} from '@sentinel0/common'
 import { HermesClient } from '../../src/hermes/client.js'
 import { HermesAdapter, mapHermesStatus } from '../../src/hermes/adapter.js'
 import { startFakeHermes, type FakeHermes } from './fake-hermes-server.js'
@@ -141,14 +147,80 @@ describe('HermesAdapter.run', () => {
     expect(server.stopCalls).toEqual(['run_test_1'])
   })
 
-  it('surfaces a pending approval instead of blocking on it', async () => {
+  it('waits at an approval gate and carries on once it is answered', async () => {
+    // The gate opens on the second poll, as it would when a human answers.
+    server = await startFakeHermes({ statuses: ['pending_approval', 'running', 'completed'] })
+    const { logger } = makeLogger()
+    const required: RunApprovalDetail[] = []
+    let resolved = 0
+
+    const outcome = await adapterFor(server, logger).run({
+      ...JOB,
+      onApprovalRequired: (detail) => required.push(detail),
+      onApprovalResolved: () => {
+        resolved += 1
+      },
+    })
+
+    // The run must finish. Returning AWAITING_APPROVAL here -- which this did
+    // until the gate could be answered -- abandons a live run: nothing polls it
+    // again, so it holds its agent until someone cancels it by hand.
+    expect(outcome.status).toBe(RUN_STATUS.COMPLETED)
+    expect(required).toHaveLength(1)
+    expect(resolved).toBe(1)
+    expect(server.stopCalls).toEqual([])
+  })
+
+  it('reports each edge of the gate exactly once, however long the wait', async () => {
+    server = await startFakeHermes({
+      statuses: ['pending_approval', 'pending_approval', 'pending_approval', 'completed'],
+    })
+    const { logger } = makeLogger()
+    let required = 0
+
+    await adapterFor(server, logger).run({
+      ...JOB,
+      onApprovalRequired: () => {
+        required += 1
+      },
+    })
+
+    expect(required).toBe(1)
+  })
+
+  it('denies and stops a gate nobody answers in time', async () => {
     server = await startFakeHermes({ statuses: ['pending_approval'] })
     const { logger } = makeLogger()
 
-    const outcome = await adapterFor(server, logger).run(JOB)
+    const outcome = await adapterFor(server, logger).run({
+      ...JOB,
+      // A tenth of a second stands in for the hour this defaults to.
+      approvalTimeoutSeconds: 0.1,
+    })
 
-    expect(outcome.status).toBe(RUN_STATUS.AWAITING_APPROVAL)
-    expect(server.stopCalls).toEqual([])
+    expect(outcome.status).toBe(RUN_STATUS.FAILED)
+    expect(outcome.error).toContain('not answered')
+    // Denied first, then stopped: leaving a gate open on the Hermes side keeps
+    // the agent sitting there after Sentinel0 has written the run off.
+    expect(server.approvalCalls).toEqual([{ runId: 'run_test_1', body: { choice: 'deny' } }])
+    expect(server.stopCalls).toEqual(['run_test_1'])
+  })
+
+  it('does not spend the run budget while a human is deciding', async () => {
+    // Two seconds of gate against a one-second run timeout: if waiting counted
+    // against the run, this would fail on the timeout rather than complete.
+    server = await startFakeHermes({
+      statuses: [...Array(12).fill('pending_approval'), 'completed'],
+    })
+    const { logger } = makeLogger()
+
+    const outcome = await adapterFor(server, logger).run({
+      ...JOB,
+      timeoutSeconds: 1,
+      approvalTimeoutSeconds: 30,
+    })
+
+    expect(outcome.status).toBe(RUN_STATUS.COMPLETED)
   })
 
   it('reports a failed run with the error Hermes gave', async () => {

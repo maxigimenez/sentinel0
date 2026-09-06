@@ -16,7 +16,7 @@ import { ErrorPanel } from '../components/ErrorPanel.js'
 import { Spinner } from '@16-bits-design/ui/spinner'
 import { PageHeader } from '../components/PageHeader.js'
 import { Panel, Section } from '../components/Panel.js'
-import type { RunEvent } from '../api/types.js'
+import type { Run, RunEvent } from '../api/types.js'
 
 function dotClass(level: string | null): string {
   if (level === 'error') {
@@ -36,20 +36,92 @@ function eventTime(event: RunEvent): string {
   return millis === undefined ? '—' : new Date(millis).toLocaleTimeString()
 }
 
+function formatUsage(usage: Run['usage']): string {
+  if (!usage) {
+    return '—'
+  }
+  const tokens = usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+  const cost = usage.costUsd ? ` · $${usage.costUsd.toFixed(2)}` : ''
+  return tokens ? `${tokens.toLocaleString()} tokens${cost}` : '—'
+}
+
+/**
+ * What to type on the runner's own machine to follow or steer this run.
+ *
+ * Shown rather than described because the ids involved -- the Sentinel0 run,
+ * the Hermes run, the profile prefix -- are exactly the things nobody can
+ * reconstruct from memory at the moment they need them.
+ */
+function tapInCommands(run: Run): string[] {
+  const lines = [`sentinel0 logs --run ${run.id} --follow`]
+  if (run.status === 'awaiting_approval') {
+    lines.push(`sentinel0 approve ${run.id}`, `sentinel0 approve ${run.id} --deny`)
+  } else if (!isTerminal(run.status)) {
+    lines.push(`sentinel0 cancel ${run.id}`)
+  }
+  if (run.hermes_run_id) {
+    const prefix =
+      run.agent_profile && run.agent_profile !== 'default' ? `/p/${run.agent_profile}` : ''
+    lines.push(
+      '',
+      "# on the Hermes side (needs that profile's key)",
+      `curl "$HERMES_BASE_URL${prefix}/v1/runs/${run.hermes_run_id}" -H "authorization: Bearer $HERMES_KEY"`
+    )
+  }
+  return lines
+}
+
 export function RunDetail(): ReactNode {
   const { id = '' } = useParams()
   const key = useKey()
   const { toast } = useToast()
   const [confirming, setConfirming] = useState(false)
 
-  const run = useResource((k, signal) => api.run(k, id, signal), [id], { pollMs: 10_000 })
-  const events = useResource((k, signal) => api.runEvents(k, id, signal), [id], { pollMs: 10_000 })
+  // A live run is watched, not glanced at: three seconds is the difference
+  // between seeing an agent work and refreshing to find out whether it did.
+  const run = useResource((k, signal) => api.run(k, id, signal), [id], { pollMs: 3_000 })
+  const events = useResource((k, signal) => api.runEvents(k, id, signal), [id], { pollMs: 3_000 })
 
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [])
+
+  const [denying, setDenying] = useState(false)
+  const [answering, setAnswering] = useState(false)
+
+  /**
+   * Answers a gate.
+   *
+   * "Approve" sends Hermes `session`, which unblocks the rest of this run
+   * rather than the single call: an agent stopped mid-task will otherwise ask
+   * again moments later, and clicking approve four times is not consent, it is
+   * an obstacle course.
+   */
+  const answer = async (choice: 'session' | 'deny'): Promise<void> => {
+    setAnswering(true)
+    try {
+      await api.approveRun(key, id, choice)
+      toast({
+        tone: choice === 'deny' ? 'warning' : 'info',
+        title: choice === 'deny' ? 'Denial queued' : 'Approval queued',
+        // Same honesty as cancel: the runner has to collect this before
+        // anything actually changes.
+        message: 'The runner will pass this to the agent on its next poll.',
+      })
+      setDenying(false)
+      run.reload()
+    } catch (error) {
+      toast({
+        tone: 'danger',
+        title: 'Could not answer',
+        message: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setAnswering(false)
+    }
+  }
 
   const cancel = async (): Promise<void> => {
     try {
@@ -96,6 +168,9 @@ export function RunDetail(): ReactNode {
 
   const data = run.data
   const running = !isTerminal(data.status)
+  const awaiting = data.status === 'awaiting_approval'
+  const wants =
+    data.approval_detail?.command ?? data.approval_detail?.arguments ?? data.approval_detail?.tool
 
   return (
     <>
@@ -131,6 +206,29 @@ export function RunDetail(): ReactNode {
             </Alert>
           ) : null}
 
+          {awaiting ? (
+            <Alert tone="warning" title="This agent is waiting for you">
+              <div className="px-approval">
+                {wants ? (
+                  <Code label="Waiting to run">{wants}</Code>
+                ) : (
+                  <Text size="small" tone="soft">
+                    Hermes did not say what it wants to do. The run log below is the best account of
+                    where it stopped.
+                  </Text>
+                )}
+                <div className="px-approval__actions">
+                  <Button onClick={() => void answer('session')} disabled={answering}>
+                    approve
+                  </Button>
+                  <Button variant="danger" onClick={() => setDenying(true)} disabled={answering}>
+                    deny
+                  </Button>
+                </div>
+              </div>
+            </Alert>
+          ) : null}
+
           <Section title="Details">
             <dl className="px-kv">
               <dt>Run</dt>
@@ -157,7 +255,22 @@ export function RunDetail(): ReactNode {
               <dd>{data.started_at ? new Date(data.started_at).toLocaleString() : 'not yet'}</dd>
               <dt>Ended</dt>
               <dd>{data.ended_at ? new Date(data.ended_at).toLocaleString() : '—'}</dd>
+              <dt>Hermes run</dt>
+              <dd>{data.hermes_run_id ? <code>{data.hermes_run_id}</code> : '—'}</dd>
+              <dt>Hermes session</dt>
+              <dd>{data.hermes_session_id ? <code>{data.hermes_session_id}</code> : '—'}</dd>
+              <dt>Usage</dt>
+              <dd>{formatUsage(data.usage)}</dd>
             </dl>
+          </Section>
+
+          {/*
+            The commands to look at this run from a terminal. The dashboard is
+            the view from off the runner's network; when someone is actually on
+            that machine, these are faster than anything here.
+          */}
+          <Section title="Tap in">
+            <Code label="Commands">{tapInCommands(data).join('\n')}</Code>
           </Section>
 
           {data.summary ? (
@@ -206,6 +319,19 @@ export function RunDetail(): ReactNode {
         confirmLabel="cancel run"
         cancelLabel="let it finish"
         onConfirm={() => void cancel()}
+      />
+
+      <Dialog
+        open={denying}
+        onOpenChange={setDenying}
+        tone="danger"
+        icon="!"
+        title="Deny this request"
+        description="The agent is told no and decides what to do about it, which is usually to stop. Approving instead lets it finish the task it is in the middle of."
+        meta={wants ?? data.id}
+        confirmLabel="deny"
+        cancelLabel="go back"
+        onConfirm={() => void answer('deny')}
       />
     </>
   )

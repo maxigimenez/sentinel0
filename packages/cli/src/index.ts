@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import chalk from 'chalk'
 import { DEFAULT_API_PORT } from '@sentinel0/common'
 import {
+  parseApproveOptions,
   parseCancelOptions,
   parseEmptyOptions,
   parseLogsOptions,
@@ -26,6 +27,7 @@ import { MANIFEST_FILE } from './constants.js'
 import { ensureCapableRuntime, SQLITE_FLAG } from './node-runtime.js'
 import { runAgents } from './commands/agents.js'
 import { runCancel } from './commands/cancel.js'
+import { runApprove } from './commands/approve.js'
 import { runInit } from './commands/init.js'
 import { runLogs } from './commands/logs.js'
 import { runPreflight } from './commands/preflight.js'
@@ -162,6 +164,8 @@ async function dispatch(command: string | undefined, args: string[]): Promise<vo
       return runLogs(context, parseLogsOptions(args))
     case 'cancel':
       return runCancel(context, parseCancelOptions(args))
+    case 'approve':
+      return runApprove(context, parseApproveOptions(args))
     case 'run':
       return runSmokeTest(context, parseRunOptions(args))
     case 'version':

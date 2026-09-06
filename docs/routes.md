@@ -57,6 +57,7 @@ omitting a key, or giving it an empty array, imposes no constraint.
 | `labels` | anything |
 | `state` | tickets (`Backlog`, `open`, …) |
 | `assignees` | anything |
+| `reviewers` | pull requests — who is currently asked to review |
 | `titleMatches` / `bodyMatches` | regex against title or description |
 | `isDraft` | pull requests only |
 | `baseBranch` | pull requests only |
@@ -85,10 +86,28 @@ second when the act is the signal.
 "target": { "agentRef": { "githubLogin": "acme-reviewer" } } // by GitHub identity
 ```
 
-`githubLogin` only fires when that identity was the one actually requested or
-assigned, which is what makes "review when *this* agent is asked" address one agent
-rather than all of them. It applies to pull request triggers only; the API rejects it
-on a `ticket` route, which could never fire.
+`githubLogin` fires only when that account is **named on the item** — assigned to it,
+or asked to review it — which is what makes "act when *this* agent is asked" address
+one agent rather than all of them. It applies to pull request triggers only; the API
+rejects it on a `ticket` route, which could never fire.
+
+### Which GitHub account is which
+
+There are two, and Sentinel0 only owns one of them.
+
+- **The runner's `gh`.** Every poll, every label, every comment Sentinel0 writes goes
+  through whatever `gh auth login` was run on the runner's machine. This account needs
+  write access to the repositories you watch, or the `sentinel0:in-progress` marker
+  cannot be set and routes will fire twice.
+- **The agent's own `gh`,** inside its Hermes profile. This is who opens the pull
+  request and leaves the review. Sentinel0 passes Hermes **no** GitHub token — the
+  agent's credentials are Hermes' business entirely.
+
+`githubLogin` in `~/.sentinel0/config.json` is your *declaration* of which account the
+second one is. Nothing verifies it. Set it wrong and login-targeted routes silently
+never match; leave it unset and `sentinel0 preflight` says so. It cannot be set from
+the dashboard, because the agent registry there is derived state — the next inventory
+push would overwrite it.
 
 ---
 

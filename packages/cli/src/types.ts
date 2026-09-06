@@ -1,4 +1,4 @@
-import type { StoredConfig } from '@sentinel0/common'
+import type { ApprovalChoice, StoredConfig } from '@sentinel0/common'
 
 export type RunningState = {
   startedAt: number
@@ -25,6 +25,7 @@ export type LogsCommandOptions = { runId?: string; follow: boolean }
 export type RunsCommandOptions = { status?: string; limit: number }
 export type RunCommandOptions = { agent: string; prompt: string; timeoutSeconds: number }
 export type CancelCommandOptions = { runId: string }
+export type ApproveCommandOptions = { runId: string; choice: ApprovalChoice }
 export type RunnerCommandOptions = { action: 'install' | 'uninstall' | 'status' }
 export type EmptyOptions = Record<string, never>
 

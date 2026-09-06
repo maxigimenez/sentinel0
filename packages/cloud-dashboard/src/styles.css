@@ -445,6 +445,14 @@ a:focus-visible,
   padding-right: 2px;
 }
 
+/*
+ * The header is one line, always.
+ *
+ * `flex-wrap: wrap` here used to break the actions onto a second row rather
+ * than shrink the crumbs, so the ellipsis machinery on `.px-crumbs__here` never
+ * engaged and a long pull request title cost the page a whole line of height.
+ * No wrap, a crumb trail that may shrink, and an action slot that may not.
+ */
 .px-topbar {
   flex: none;
   padding: 14px var(--bits-space-1) 2px;
@@ -452,14 +460,16 @@ a:focus-visible,
   align-items: center;
   justify-content: space-between;
   gap: var(--bits-space-5);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .px-crumbs {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 /*
@@ -484,6 +494,9 @@ a:focus-visible,
   font-family: var(--bits-font-display);
   font-size: var(--bits-font-size-h4);
   line-height: 13px;
+  /* The parent link is short and fixed; only the title may be trimmed. */
+  flex: none;
+  white-space: nowrap;
   color: var(--bits-text-muted);
   background: none;
   border: 0;
@@ -533,6 +546,7 @@ a:focus-visible,
   justify-content: flex-end;
   gap: 10px;
   min-height: 38px;
+  flex: none;
 }
 
 /* Row actions sit right and stay on one line as the table scrolls. */
@@ -596,7 +610,14 @@ a:focus-visible,
   align-items: center;
   justify-content: space-between;
   gap: var(--bits-space-4);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.px-section__head > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .px-section__title {
@@ -1144,4 +1165,42 @@ a:focus-visible,
 .px-runnerline__dot--warn {
   background: var(--bits-amber);
   animation: none;
+}
+
+/*
+ * Cells that must not widen the table.
+ *
+ * `TableCellContent` already clips, but a bare `<Text>` in a cell does not, and
+ * one long route name or GitHub login was enough to push the table past its
+ * container and produce a horizontal scrollbar on the whole page.
+ */
+.px-cellclip {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The approve/deny pair inside the waiting-for-approval alert. */
+.px-approval {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bits-space-4);
+}
+
+.px-approval__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--bits-space-3);
+  flex-wrap: wrap;
+}
+
+/* The skipped-triggers list inside the overview alert. */
+.px-skips {
+  margin: 0;
+  padding-left: var(--bits-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--bits-space-2);
 }

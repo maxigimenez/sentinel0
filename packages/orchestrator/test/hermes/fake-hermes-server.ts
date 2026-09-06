@@ -29,6 +29,9 @@ export interface FakeHermesOptions {
   expectPrefix?: string
 }
 
+/** Hermes' approval vocabulary, spelled out so the fake cannot drift from it. */
+const APPROVAL_CHOICES = ['once', 'session', 'always', 'deny']
+
 export interface FakeHermes {
   baseUrl: string
   close(): Promise<void>
@@ -113,6 +116,22 @@ export async function startFakeHermes(options: FakeHermesOptions = {}): Promise<
     if (req.method === 'POST' && approvalMatch) {
       void readBody().then((body) => {
         approvalCalls.push({ runId: decodeURIComponent(approvalMatch[1]), body })
+
+        // Validated exactly as the real gateway does. Recording the body
+        // without checking it is how a client that sent `{"decision":
+        // "approve"}` -- a key and a vocabulary Hermes has never accepted --
+        // passed every test in this suite while failing against the real thing.
+        const choice = (body as { choice?: unknown } | undefined)?.choice
+        if (typeof choice !== 'string' || !APPROVAL_CHOICES.includes(choice)) {
+          json(400, {
+            error: {
+              message: `Invalid approval choice; expected one of: ${APPROVAL_CHOICES.join(', ')}`,
+              type: 'invalid_request_error',
+              code: 'invalid_approval_choice',
+            },
+          })
+          return
+        }
         json(200, { ok: true })
       })
       return

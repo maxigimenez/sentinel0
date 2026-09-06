@@ -96,6 +96,13 @@ export const api = {
     body: { runnerId: string; agentProfile: string; prompt: string; title?: string }
   ) => request<{ queued: string; runner: string }>(key, '/v1/runs', { method: 'POST', body }),
 
+  approveRun: (key: string, id: string, choice: 'once' | 'session' | 'always' | 'deny') =>
+    request<{ queued: string; choice: string }>(
+      key,
+      `/v1/runs/${encodeURIComponent(id)}/approval`,
+      { method: 'POST', body: { choice } }
+    ),
+
   cancelRun: (key: string, id: string) =>
     request<{ queued: string }>(key, `/v1/runs/${encodeURIComponent(id)}/cancel`, {
       method: 'POST',
