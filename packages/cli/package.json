@@ -1,6 +1,6 @@
 {
   "name": "sentinel0",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Trigger Hermes agents from your tickets and pull requests.",
   "type": "module",
   "keywords": [
@@ -35,8 +35,8 @@
   "dependencies": {
     "@clack/prompts": "1.4.0",
     "@fastify/cors": "11.2.0",
-    "@sentinel0/common": "0.0.1",
-    "@sentinel0/orchestrator": "0.0.1",
+    "@sentinel0/common": "0.0.2",
+    "@sentinel0/orchestrator": "0.0.2",
     "chalk": "4",
     "fastify": "5.7.4",
     "p-limit": "6.1.0",
