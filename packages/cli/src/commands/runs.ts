@@ -49,6 +49,17 @@ export async function runRuns(context: CliContext, options: RunsCommandOptions):
       `  ${color(run.status.padEnd(18))} ${chalk.bold(run.agentProfile.padEnd(12))} ${run.triggerRef}`
     )
     console.log(chalk.dim(`      ${run.id}  ${run.title}  ·  ${ago(run.updatedAt)}`))
+    if (run.hermesRunId) {
+      // The Hermes ids were always fetched here and never shown, which is
+      // exactly what someone needs to look at the other side of a run.
+      const session = run.hermesSessionId ? `  session ${run.hermesSessionId}` : ''
+      console.log(chalk.dim(`      hermes ${run.hermesRunId}${session}`))
+    }
+    if (run.status === RUN_STATUS.AWAITING_APPROVAL) {
+      const wants = run.approvalDetail?.command ?? run.approvalDetail?.tool
+      console.log(chalk.yellow(`      waiting for approval${wants ? `: ${wants}` : ''}`))
+      console.log(chalk.dim(`      sentinel0 approve ${run.id}`))
+    }
     if (run.summary) {
       console.log(chalk.dim(`      ${run.summary.split('\n')[0].slice(0, 100)}`))
     }
@@ -58,5 +69,6 @@ export async function runRuns(context: CliContext, options: RunsCommandOptions):
   }
   console.log('')
   console.log(chalk.dim('  sentinel0 logs --run <id>    full output for one run'))
+  console.log(chalk.dim('  sentinel0 approve <id>       answer an agent waiting on you'))
   console.log('')
 }

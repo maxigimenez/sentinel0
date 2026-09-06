@@ -102,6 +102,9 @@ export function matchesRule(rule: RoutingRule, event: TriggerEvent): boolean {
   if (!matchesSet(rule.match.assignees, event.assignees ?? [])) {
     return false
   }
+  if (!matchesSet(rule.match.reviewers, event.requestedReviewers ?? [])) {
+    return false
+  }
   if (!matchesSet(rule.match.baseBranch, event.baseBranch ? [event.baseBranch] : [])) {
     return false
   }
@@ -143,12 +146,21 @@ export function matchesRule(rule: RoutingRule, event: TriggerEvent): boolean {
   }
 
   // A rule targeting an agent by GitHub identity only fires when that identity
-  // was actually the one asked for - this is what makes "assign the reviewer
-  // bot as a PR reviewer" address one specific agent rather than all of them.
+  // was actually named on the item - this is what makes "hand this to the
+  // review bot" address one specific agent rather than all of them.
+  //
+  // Named means assigned *or* requested as a reviewer. Checking reviewers alone,
+  // as this once did, made a whole shape of route silently impossible: the API
+  // accepts a pr_event route matching `assigneesAdded` and targeting a login,
+  // and it could never fire, because assigning someone does not request their
+  // review. A dead route that reports no error is worse than a rejected one.
   const githubLogin = rule.target.agentRef.githubLogin
   if (githubLogin) {
-    const requested = new Set(normalize(event.requestedReviewers ?? []))
-    if (!requested.has(githubLogin.trim().toLowerCase())) {
+    const named = new Set([
+      ...normalize(event.requestedReviewers ?? []),
+      ...normalize(event.assignees ?? []),
+    ])
+    if (!named.has(githubLogin.trim().toLowerCase())) {
       return false
     }
   }

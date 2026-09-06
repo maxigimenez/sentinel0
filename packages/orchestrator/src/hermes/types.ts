@@ -50,12 +50,30 @@ export interface HermesCreateRunRequest {
 export interface HermesCreateRunResponse {
   run_id: string
   status?: string
+  session_id?: string
 }
 
 export interface HermesUsage {
   input_tokens?: number
   output_tokens?: number
   total_tokens?: number
+}
+
+/**
+ * What Hermes is asking permission for, when it says so at all.
+ *
+ * Verified only to the extent that `POST /v1/runs/{id}/approval` rejects a
+ * missing or unknown `choice` with `invalid_approval_choice`; the shape of the
+ * *pending* side is inferred, so every field is optional and the adapter has a
+ * fallback (the last tool call seen on the stream) when none of them arrive.
+ */
+export interface HermesPendingApproval {
+  id?: string
+  tool?: string
+  tool_name?: string
+  command?: string
+  arguments?: unknown
+  input?: unknown
 }
 
 export interface HermesRunState {
@@ -66,6 +84,8 @@ export interface HermesRunState {
   error?: string
   session_id?: string
   response_id?: string
+  pending_approval?: HermesPendingApproval
+  approval?: HermesPendingApproval
 }
 
 /** One decoded server-sent event from `GET /v1/runs/{id}/events`. */

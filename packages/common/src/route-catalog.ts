@@ -204,6 +204,11 @@ export const ROUTE_CATALOG: RouteTemplate[] = [
       // nothing the agent does adds a reviewer.
       guard: { refire: 'per-change', markers: true },
       trigger: { type: 'pr_review_requested', provider: 'github', projectId: '<PROJECT_ID>' },
+      // Transition, deliberately. `match.reviewers` would also fire here and
+      // would additionally catch a request made while the runner was down --
+      // but a pull request's revision includes its updatedAt, so under
+      // per-change refiring every push would start another review round. Being
+      // asked is the signal; still being an outstanding reviewer is not.
       match: { reviewersAdded: { any: ['<AGENT_GITHUB_LOGIN>'] } },
       target: { agentRef: { githubLogin: '<AGENT_GITHUB_LOGIN>' } },
       execution: {
@@ -240,15 +245,19 @@ export const ROUTE_CATALOG: RouteTemplate[] = [
     description:
       'Fires when the agent is newly assigned, and skips drafts. Use this when you ' +
       'want assignment rather than review request to be the signal.',
-    placeholders: [PROJECT, PROFILE, GITHUB_LOGIN],
+    placeholders: [PROJECT, GITHUB_LOGIN],
     route: {
       name: 'Work assigned pull requests',
       priority: 90,
       enabled: true,
       guard: { refire: 'per-change', markers: true },
       trigger: { type: 'pr_event', provider: 'github', projectId: '<PROJECT_ID>' },
+      // Assignment is the signal, and the login now targets the agent directly:
+      // until this release the gate behind `agentRef.githubLogin` consulted
+      // only requested reviewers, so this route could be saved and could never
+      // fire. See the note in rule-engine's matchesRule.
       match: { assigneesAdded: { any: ['<AGENT_GITHUB_LOGIN>'] }, isDraft: false },
-      target: { agentRef: { profile: '<AGENT_PROFILE>' } },
+      target: { agentRef: { githubLogin: '<AGENT_GITHUB_LOGIN>' } },
       execution: {
         prompt: [
           'You have been assigned {{ticket.ref}}.',

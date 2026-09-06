@@ -1,3 +1,4 @@
+import type { ApprovalChoice } from '@sentinel0/common'
 import type {
   HermesCapabilities,
   HermesCreateRunRequest,
@@ -157,11 +158,17 @@ export class HermesClient {
     await this.postJson<unknown>(`/v1/runs/${encodeURIComponent(runId)}/stop`, {})
   }
 
-  async resolveApproval(runId: string, approved: boolean, reason?: string): Promise<void> {
-    await this.postJson<unknown>(`/v1/runs/${encodeURIComponent(runId)}/approval`, {
-      decision: approved ? 'approve' : 'reject',
-      ...(reason ? { reason } : {}),
-    })
+  /**
+   * Answer a pending approval gate.
+   *
+   * The body is `{choice}` and the vocabulary is Hermes': `once`, `session`,
+   * `always`, `deny`. Anything else comes back as `invalid_approval_choice`,
+   * and answering a run whose gate has already lapsed comes back as
+   * `approval_not_pending` -- which is what a run abandoned by the poller looks
+   * like from the outside.
+   */
+  async resolveApproval(runId: string, choice: ApprovalChoice): Promise<void> {
+    await this.postJson<unknown>(`/v1/runs/${encodeURIComponent(runId)}/approval`, { choice })
   }
 
   /**

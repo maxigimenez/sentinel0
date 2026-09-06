@@ -88,6 +88,7 @@ sentinel0 routes               # what it will act on
 sentinel0 runs                 # recent runs
 sentinel0 logs --follow        # watch one happen
 sentinel0 cancel <id>          # stop it here and on Hermes
+sentinel0 approve <id>         # answer an agent waiting for permission
 ```
 
 Debugging a machine, not a workflow:

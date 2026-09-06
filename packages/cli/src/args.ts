@@ -1,6 +1,12 @@
 import path from 'node:path'
-import { DEFAULT_API_PORT, DEFAULT_CONCURRENCY } from '@sentinel0/common'
+import {
+  APPROVAL_CHOICE,
+  APPROVAL_CHOICES,
+  DEFAULT_API_PORT,
+  DEFAULT_CONCURRENCY,
+} from '@sentinel0/common'
 import type {
+  ApproveCommandOptions,
   CancelCommandOptions,
   EmptyOptions,
   LogsCommandOptions,
@@ -127,6 +133,28 @@ export function parseCancelOptions(args: string[]): CancelCommandOptions {
     throw new Error('cancel requires a run id.')
   }
   return { runId }
+}
+
+/**
+ * `approve <run-id> [--once|--session|--always|--deny]`
+ *
+ * Defaults to `session`: the common case is unblocking one agent that has
+ * stopped mid-task, and granting only the single call means being asked again
+ * moments later. `always` is never the default -- it outlives the run.
+ */
+export function parseApproveOptions(args: string[]): ApproveCommandOptions {
+  assertKnownFlags(args, ['--once', '--session', '--always', '--deny'], 'approve')
+  const runId = args.find((arg) => !arg.startsWith('--'))
+  if (!runId) {
+    throw new Error('approve requires a run id.')
+  }
+
+  const chosen = APPROVAL_CHOICES.filter((choice) => args.includes(`--${choice}`))
+  if (chosen.length > 1) {
+    throw new Error(`approve takes one of: ${APPROVAL_CHOICES.map((c) => `--${c}`).join(', ')}.`)
+  }
+
+  return { runId, choice: chosen[0] ?? APPROVAL_CHOICE.SESSION }
 }
 
 export function parseRunnerOptions(args: string[]): RunnerCommandOptions {

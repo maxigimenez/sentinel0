@@ -29,6 +29,7 @@ export function printUsage(version: string): void {
       '    runs [--status] [--limit]   recent runs',
       '    logs [--run <id>] [--follow]',
       '    cancel <run-id>             stop a run, on this side and on Hermes',
+      '    approve <run-id> [--deny]   answer an agent waiting for permission',
       '',
       chalk.bold('  Debugging'),
       '    run --agent <profile> --prompt "..."',

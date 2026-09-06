@@ -1,5 +1,11 @@
 import chalk from 'chalk'
-import { sleep, type RunLogEntry, type RunRecord } from '@sentinel0/common'
+import {
+  RUN_STATUS,
+  isTerminalRunStatus,
+  sleep,
+  type RunLogEntry,
+  type RunRecord,
+} from '@sentinel0/common'
 import { getJson, runnerUnreachable } from '../api.js'
 import type { CliContext, LogsCommandOptions } from '../types.js'
 
@@ -39,6 +45,7 @@ export async function runLogs(context: CliContext, options: LogsCommandOptions):
   }
 
   let since = 0
+  let announcedApproval = false
   for (;;) {
     const { events } = await getJson<{ events: RunLogEntry[] }>(
       `${apiBase}/runs/${runId}/events?since=${since}`
@@ -55,9 +62,22 @@ export async function runLogs(context: CliContext, options: LogsCommandOptions):
     }
 
     const { run } = await getJson<{ run: RunRecord }>(`${apiBase}/runs/${runId}`)
-    if (['completed', 'failed', 'canceled'].includes(run.status)) {
+    if (isTerminalRunStatus(run.status)) {
       console.log(chalk.dim(`\nRun ${run.status}.`))
       return
+    }
+
+    // A run waiting on a person produces no further output until someone
+    // answers, so a follow that says nothing is indistinguishable from a hung
+    // agent. Say what is happening, and what unblocks it, exactly once.
+    if (run.status === RUN_STATUS.AWAITING_APPROVAL && !announcedApproval) {
+      announcedApproval = true
+      const wants = run.approvalDetail?.command ?? run.approvalDetail?.tool
+      console.log(chalk.yellow(`\nWaiting for approval${wants ? `: ${wants}` : ''}`))
+      console.log(chalk.dim(`  sentinel0 approve ${runId}          let it proceed`))
+      console.log(chalk.dim(`  sentinel0 approve ${runId} --deny   refuse\n`))
+    } else if (run.status !== RUN_STATUS.AWAITING_APPROVAL) {
+      announcedApproval = false
     }
 
     await sleep(1_000)

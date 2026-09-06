@@ -189,7 +189,8 @@ DELETE /v1/routes/:id
 
   "target": {
     "agentRef": { "profile": "product" }
-    // or, for pr_review_requested:
+    // or, for either pull request trigger — matches the account being
+    // assigned to the item or asked to review it:
     // "agentRef": { "githubLogin": "acme-reviewer-bot" }
   },
 
@@ -197,7 +198,8 @@ DELETE /v1/routes/:id
     "prompt": "Review {{ticket.ref}}: {{ticket.title}}\n\n{{ticket.body}}",
     "requireApproval": false,            // uses Hermes' own approval gate
     "modelOverride": null,               // null = the profile's own model
-    "timeoutSeconds": 1800
+    "timeoutSeconds": 1800,
+    "approvalTimeoutSeconds": 3600       // optional; how long a gate may wait
   },
 
   "outcome": {
@@ -416,6 +418,7 @@ GET  /v1/runs/:id/events?since=<ms>&limit=500
 POST /v1/runs                { "event": { … } }   queue a manual dispatch
 POST /v1/runs                { "agentProfile", "prompt" }   run one agent directly
 POST /v1/runs/:id/cancel
+POST /v1/runs/:id/approval   { "choice": "session" }   answer a waiting agent
 POST /v1/resync                                   make the runner reload config
 ```
 
@@ -424,7 +427,32 @@ picks it up on its next long poll — usually within a second or two, not on a f
 interval.
 
 Statuses: `queued`, `running`, `awaiting_approval`, `completed`, `failed`, `canceled`.
-`awaiting_approval` still occupies its agent.
+`awaiting_approval` still occupies its agent — the run is alive on Hermes and waiting
+on a person, not parked.
+
+### Answering an agent that stopped for permission
+
+```http
+POST /v1/runs/:id/approval
+{ "choice": "once" | "session" | "always" | "deny" }
+```
+
+The vocabulary is Hermes' own; anything else is a `400`. `once` allows the single call,
+`session` the rest of this run, `always` persists beyond it, `deny` refuses. The
+dashboard's **approve** button sends `session`.
+
+A run that is not `awaiting_approval` is a `409` that says what it is doing instead.
+Unlike `cancel`, this command is addressed at the runner that mirrored the run — an
+approval delivered to any other machine is one nothing will ever answer.
+
+The run's `approval_detail` says what is being asked, where Hermes described it and
+otherwise from the last tool call seen on the stream. Nobody answers a gate they cannot
+see, so it is a hint, not a contract: every field is optional.
+
+If nobody answers within `execution.approvalTimeoutSeconds` (default 3600), the runner
+denies the request and fails the run rather than holding the agent indefinitely. The
+run's own `timeoutSeconds` does not advance while it waits — the agent is not working,
+so its budget should not burn.
 
 ### Starting an agent on your own prompt
 
@@ -523,6 +551,14 @@ DELETE /v1/integrations/slack
 
 Events: `run.started`, `run.completed`, `run.failed`, `run.needs_approval`,
 `run.canceled`, `runner.stale`. Restrict them by passing `events` to `PUT`.
+
+`run.needs_approval` names what the agent wants to do and how to unblock it. Set
+`DASHBOARD_URL` on the API service to have it link straight to the run; without it the
+message still gives the `sentinel0 approve <run-id>` command.
+
+`runner.stale` is emitted by a sweep every 45 seconds, once per outage, and cleared by
+the runner's next heartbeat. A runner going quiet is the one event that stops everything
+else, so it is worth interrupting someone about.
 
 An agent with an `avatarUrl` has its image rendered **inside** the message, as a Block
 Kit accessory. The Slack app's own name and icon are never overridden — the webhook's

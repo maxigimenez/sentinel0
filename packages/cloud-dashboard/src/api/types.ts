@@ -34,7 +34,17 @@ export interface Runner {
   hermes_detail: string | null
   active_runs: number | null
   last_error: string | null
+  /** Routing decisions that produced no run, newest last. */
+  recent_skips: SkipReport[] | null
   stale: boolean
+}
+
+/** Why a trigger produced no run. */
+export interface SkipReport {
+  reason: string
+  ref: string
+  routeId?: string
+  at: number
 }
 
 export interface Agent {
@@ -51,6 +61,17 @@ export interface Agent {
   enabled: boolean
   synced_at: string | null
   runner: string
+  /**
+   * What the agent is doing, as its runner last reported.
+   *
+   * Null on an agent whose runner has not heartbeated since it was registered.
+   * Distinct from `enabled`, which is configuration: an enabled agent can be
+   * idle, busy, or waiting on a person.
+   */
+  status: 'idle' | 'busy' | 'awaiting_approval' | null
+  current_run_id: string | null
+  status_at: string | null
+  runner_stale: boolean
 }
 
 export interface Project {
@@ -59,17 +80,36 @@ export interface Project {
   filters: Record<string, unknown>
 }
 
+/** What an agent is waiting to be allowed to do. Every field is a hint. */
+export interface ApprovalDetail {
+  tool?: string
+  command?: string
+  arguments?: string
+  requestedAt?: number
+}
+
 export interface Run {
   id: string
   route_name: string | null
   agent_profile: string | null
   project_id: string | null
   trigger_ref: string | null
+  trigger_revision?: string | null
   trigger_url: string | null
   title: string | null
   status: RunStatus
   summary: string | null
   error: string | null
+  /** Present on the detail endpoint, which selects the whole row. */
+  hermes_run_id?: string | null
+  hermes_session_id?: string | null
+  approval_detail?: ApprovalDetail | null
+  usage?: {
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    costUsd?: number
+  } | null
   started_at: string | null
   ended_at: string | null
   updated_at: string | null

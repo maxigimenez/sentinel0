@@ -90,7 +90,7 @@ export function AccessKeys(): ReactNode {
                 A key is how a runner and this dashboard authenticate.
               </EmptyState>
             ) : (
-              <Table scrollLabel="Access keys" containerClassName="px-tablewrap">
+              <Table scrollLabel="Access keys" containerClassName="px-tablewrap" minWidth={520}>
                 <TableHead>
                   <TableRow>
                     <TableHeader>Name</TableHeader>

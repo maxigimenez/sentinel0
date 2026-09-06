@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { Avatar } from '@16-bits-design/ui/avatar'
 import { Badge } from '@16-bits-design/ui/badge'
 import {
@@ -10,8 +11,8 @@ import {
   TableHeader,
   TableRow,
 } from '@16-bits-design/ui/table'
-import { Text } from '@16-bits-design/ui/typography'
 import { api } from '../api/endpoints.js'
+import type { Agent } from '../api/types.js'
 import { useResource } from '../lib/useResource.js'
 import { initials, relativeTime } from '../lib/format.js'
 import { EmptyState } from '@16-bits-design/ui/empty-state'
@@ -27,6 +28,39 @@ import { Panel } from '../components/Panel.js'
  * machine, not records anyone creates here. Editing one in the dashboard would
  * be overwritten by the next inventory push.
  */
+/**
+ * What an agent is doing, in one badge.
+ *
+ * `enabled` is configuration and was all this column ever showed, so a healthy
+ * idle agent and one that had been wedged on an approval for an hour looked
+ * identical. Liveness comes from the runner's heartbeat; the configuration flag
+ * only wins when it is off, because a disabled agent is not going to do
+ * anything whatever its last reported state was.
+ */
+function AgentState({ agent }: { agent: Agent }): ReactNode {
+  if (!agent.enabled) {
+    return <Badge tone="neutral">disabled</Badge>
+  }
+  if (agent.runner_stale || !agent.status) {
+    return <Badge tone="neutral">unknown</Badge>
+  }
+  if (agent.status === 'awaiting_approval') {
+    return (
+      <Link to={`/runs/${agent.current_run_id ?? ''}`} className="px-rowlink">
+        <Badge tone="amber">needs approval</Badge>
+      </Link>
+    )
+  }
+  if (agent.status === 'busy') {
+    return (
+      <Link to={`/runs/${agent.current_run_id ?? ''}`} className="px-rowlink">
+        <Badge tone="primary">running</Badge>
+      </Link>
+    )
+  }
+  return <Badge tone="success">idle</Badge>
+}
+
 export function Agents(): ReactNode {
   const agents = useResource((key, signal) => api.agents(key, signal), [], { pollMs: 60_000 })
 
@@ -44,14 +78,14 @@ export function Agents(): ReactNode {
             the runner is running and that <code>sentinel0 agents</code> lists something locally.
           </EmptyState>
         ) : (
-          <Table scrollLabel="Agents" containerClassName="px-tablewrap">
+          <Table scrollLabel="Agents" containerClassName="px-tablewrap" minWidth={560}>
             <TableHead>
               <TableRow>
                 <TableHeader>Agent</TableHeader>
                 <TableHeader>Model</TableHeader>
                 <TableHeader>GitHub</TableHeader>
                 <TableHeader>Runner</TableHeader>
-                <TableHeader>State</TableHeader>
+                <TableHeader>Doing</TableHeader>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -79,20 +113,23 @@ export function Agents(): ReactNode {
                     />
                   </TableCell>
                   <TableCell>
-                    <Text size="small" tone={agent.github_login ? 'soft' : 'faint'}>
-                      {agent.github_login ?? 'not set'}
-                    </Text>
+                    <TableCellContent
+                      primary={agent.github_login ?? 'not set'}
+                      secondary={agent.github_login ? 'own account' : 'no PR routing'}
+                    />
                   </TableCell>
                   <TableCell>
                     <TableCellContent
                       primary={agent.runner}
-                      secondary={`synced ${relativeTime(agent.synced_at)}`}
+                      secondary={
+                        agent.runner_stale
+                          ? 'not checking in'
+                          : `synced ${relativeTime(agent.synced_at)}`
+                      }
                     />
                   </TableCell>
                   <TableCell>
-                    <Badge tone={agent.enabled ? 'success' : 'neutral'}>
-                      {agent.enabled ? 'enabled' : 'disabled'}
-                    </Badge>
+                    <AgentState agent={agent} />
                   </TableCell>
                 </TableRow>
               ))}

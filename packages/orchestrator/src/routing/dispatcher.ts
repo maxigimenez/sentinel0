@@ -12,7 +12,7 @@ import {
   type TriggerEvent,
 } from '@sentinel0/common'
 import type { Sentinel0Database } from '../database.js'
-import type { HermesAdapter } from '../hermes/adapter.js'
+import type { HermesAdapter, HermesRunOutcome } from '../hermes/adapter.js'
 import { renderRoutePrompt } from '../prompts/render.js'
 import { resolveSummary } from '../prompts/output-contract.js'
 import { dedupeKey, evaluate, guardOf } from './rule-engine.js'
@@ -81,6 +81,35 @@ const MANUAL_ROUTE_NAME = 'manual run'
  * who started it, so one fewer field in the way is worth more than the knob.
  */
 const MANUAL_TIMEOUT_SECONDS = 1_800
+
+/**
+ * Rebuilds the trigger event a finished run came from.
+ *
+ * Only the fields the outcome handlers actually read are recoverable, and only
+ * those are needed: they address a ticket or pull request by `ref`. Matching is
+ * never done against this -- the routing decision was made long ago.
+ */
+/**
+ * The only part of a route that settling a run reads.
+ *
+ * Narrowed so resumption can settle a run whose route has since been deleted --
+ * or which never had one -- without inventing a whole rule to satisfy a type.
+ */
+type RouteOutcomeSource = Pick<RoutingRule, 'outcome'>
+
+function eventFromRun(run: RunRecord): TriggerEvent {
+  return {
+    type: run.triggerType,
+    projectId: run.projectId,
+    provider: run.triggerType === TRIGGER_TYPE.TICKET ? 'linear' : 'github',
+    ref: run.triggerRef,
+    revision: run.triggerRevision,
+    title: run.title,
+    body: '',
+    url: run.triggerUrl,
+    labels: [],
+  }
+}
 
 /** How much of the prompt becomes the run's title when none is given. */
 const TITLE_LENGTH = 80
@@ -247,44 +276,24 @@ export class Dispatcher {
           prompt,
           model: route.execution.modelOverride ?? agent.model ?? null,
           timeoutSeconds: route.execution.timeoutSeconds,
+          approvalTimeoutSeconds: route.execution.approvalTimeoutSeconds,
           // Persisted immediately so a cancel arriving mid-run has something to
           // stop, and so a runner restart can still reach an orphaned run.
-          onRunCreated: (id) => {
+          onRunCreated: (id, sessionId) => {
             hermesRunId = id
-            this.deps.lifecycle.attachHermesRun(runId, id)
+            this.deps.lifecycle.attachHermesRun(runId, id, sessionId)
           },
+          // An approval is a status this run passes through, not the end of it:
+          // the adapter keeps polling, so both edges are reported.
+          onApprovalRequired: (detail) => this.deps.lifecycle.awaitingApproval(runId, detail),
+          onApprovalResolved: () => this.deps.lifecycle.approvalResolved(runId),
         },
         controller.signal
       )
 
       this.deps.lifecycle.attachHermesRun(runId, result.hermesRunId, result.sessionId)
 
-      const summary = resolveSummary(result.output)
-
-      switch (result.status) {
-        case RUN_STATUS.COMPLETED:
-          this.deps.lifecycle.completed(runId, summary, result.usage)
-          await this.clearMarker(guard, event, SENTINEL0_LABEL.DONE)
-          await this.applyOutcomes(route, event, summary ?? 'Run completed with no summary.')
-          break
-        case RUN_STATUS.AWAITING_APPROVAL:
-          // Deliberately keeps sentinel0:in-progress: the item is still claimed
-          // by this run while a human decides.
-          this.deps.lifecycle.awaitingApproval(runId)
-          break
-        case RUN_STATUS.CANCELED:
-          this.deps.lifecycle.canceled(runId, result.error)
-          await this.clearMarker(guard, event, undefined)
-          break
-        default:
-          this.deps.lifecycle.failed(runId, result.error ?? 'Agent run failed.', result.usage)
-          await this.clearMarker(guard, event, SENTINEL0_LABEL.FAILED)
-          // The tracker still hears about it: a failure the humans never see is
-          // the worst outcome, and it is exactly the case an agent cannot report
-          // on its own behalf.
-          await this.postFailure(route, event, result.error ?? 'Agent run failed.')
-          break
-      }
+      await this.settle(runId, result, { route, event, guard })
 
       return { outcome: 'dispatched', runId, status: result.status }
     } catch (error: unknown) {
@@ -399,10 +408,12 @@ export class Dispatcher {
           prompt: request.prompt,
           model: agent.model ?? null,
           timeoutSeconds: MANUAL_TIMEOUT_SECONDS,
-          onRunCreated: (id) => {
+          onRunCreated: (id, sessionId) => {
             hermesRunId = id
-            this.deps.lifecycle.attachHermesRun(runId, id)
+            this.deps.lifecycle.attachHermesRun(runId, id, sessionId)
           },
+          onApprovalRequired: (detail) => this.deps.lifecycle.awaitingApproval(runId, detail),
+          onApprovalResolved: () => this.deps.lifecycle.approvalResolved(runId),
         },
         controller.signal
       )
@@ -413,9 +424,6 @@ export class Dispatcher {
       switch (result.status) {
         case RUN_STATUS.COMPLETED:
           this.deps.lifecycle.completed(runId, summary, result.usage)
-          break
-        case RUN_STATUS.AWAITING_APPROVAL:
-          this.deps.lifecycle.awaitingApproval(runId)
           break
         case RUN_STATUS.CANCELED:
           this.deps.lifecycle.canceled(runId, result.error)
@@ -449,6 +457,92 @@ export class Dispatcher {
    * apply (a cancellation): leaving it behind would make the item permanently
    * unroutable, since every route declines anything carrying it.
    */
+  /**
+   * Records a finished run and tells the tracker about it.
+   *
+   * Shared by the dispatch path and by resumption after a restart so that a run
+   * adopted from a previous process still clears its in-progress marker. An
+   * item left marked is unroutable forever -- the rule engine skips anything
+   * carrying it -- so this is not merely tidiness.
+   */
+  private async settle(
+    runId: string,
+    result: HermesRunOutcome,
+    context: { route: RouteOutcomeSource; event: TriggerEvent; guard: { markers: boolean } }
+  ): Promise<void> {
+    const { route, event, guard } = context
+    const summary = resolveSummary(result.output)
+
+    switch (result.status) {
+      case RUN_STATUS.COMPLETED:
+        this.deps.lifecycle.completed(runId, summary, result.usage)
+        await this.clearMarker(guard, event, SENTINEL0_LABEL.DONE)
+        await this.applyOutcomes(route, event, summary ?? 'Run completed with no summary.')
+        break
+      case RUN_STATUS.CANCELED:
+        this.deps.lifecycle.canceled(runId, result.error)
+        await this.clearMarker(guard, event, undefined)
+        break
+      default:
+        this.deps.lifecycle.failed(runId, result.error ?? 'Agent run failed.', result.usage)
+        await this.clearMarker(guard, event, SENTINEL0_LABEL.FAILED)
+        // The tracker still hears about it: a failure the humans never see is
+        // the worst outcome, and it is exactly the case an agent cannot report
+        // on its own behalf.
+        await this.postFailure(route, event, result.error ?? 'Agent run failed.')
+        break
+    }
+  }
+
+  /**
+   * Takes back a run that outlived the process which started it.
+   *
+   * The trigger event is long gone, so it is rebuilt from what the run record
+   * kept. That is enough for every outcome handler -- they address the item by
+   * `ref` -- and it is the difference between a restart costing a run and a
+   * restart costing nothing.
+   */
+  async resume(run: RunRecord, adapter: HermesAdapter, route?: RoutingRule): Promise<void> {
+    if (!run.hermesRunId) {
+      return
+    }
+    const event = eventFromRun(run)
+    const guard = route ? guardOf(route) : { markers: true, refire: 'once' as const }
+    const controller = new AbortController()
+    this.deps.inFlight?.set(run.id, controller)
+
+    try {
+      const result = await adapter.attach(
+        {
+          runId: run.id,
+          hermesRunId: run.hermesRunId,
+          timeoutSeconds: route?.execution.timeoutSeconds ?? MANUAL_TIMEOUT_SECONDS,
+          approvalTimeoutSeconds: route?.execution.approvalTimeoutSeconds,
+          onApprovalRequired: (detail) => this.deps.lifecycle.awaitingApproval(run.id, detail),
+          onApprovalResolved: () => this.deps.lifecycle.approvalResolved(run.id),
+        },
+        controller.signal
+      )
+
+      if (route) {
+        await this.settle(run.id, result, { route, event, guard })
+      } else {
+        // A manual run, or one whose route has since been deleted: there is no
+        // outcome to apply, but the status is still worth recording truthfully.
+        await this.settle(run.id, result, {
+          route: { outcome: {} },
+          event,
+          guard: { markers: false },
+        })
+      }
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.deps.lifecycle.failed(run.id, `Could not resume after a restart: ${reason}`)
+    } finally {
+      this.deps.inFlight?.delete(run.id)
+    }
+  }
+
   private async clearMarker(
     guard: { markers: boolean },
     event: TriggerEvent,
@@ -468,7 +562,7 @@ export class Dispatcher {
   }
 
   private async applyOutcomes(
-    route: RoutingRule,
+    route: RouteOutcomeSource,
     event: TriggerEvent,
     body: string
   ): Promise<void> {
@@ -484,7 +578,11 @@ export class Dispatcher {
     }
   }
 
-  private async postFailure(route: RoutingRule, event: TriggerEvent, error: string): Promise<void> {
+  private async postFailure(
+    route: RouteOutcomeSource,
+    event: TriggerEvent,
+    error: string
+  ): Promise<void> {
     const target = route.outcome.postComment?.target
     if (!target || target === COMMENT_TARGET.NONE) {
       return

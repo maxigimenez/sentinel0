@@ -124,3 +124,51 @@ describe('agent avatar', () => {
     expect(message.blocks[0].text.text).toBe(message.text)
   })
 })
+
+/**
+ * The one message that has to be actionable.
+ *
+ * A needs-approval notice announced that a decision was required and named no
+ * way to make one — there was no approve action anywhere in the product — so
+ * the only way out was to cancel the run.
+ */
+describe('the needs-approval message', () => {
+  const waiting = (approvalDetail?: RunRecord['approvalDetail']): string =>
+    (
+      buildSlackMessage(
+        'run.needs_approval',
+        run({ status: RUN_STATUS.AWAITING_APPROVAL, approvalDetail })
+      ) as { text: string }
+    ).text
+
+  it('says what the agent wants to do', () => {
+    const text = waiting({ tool: 'bash', command: 'gh pr review 42 --approve', requestedAt: 1 })
+    expect(text).toContain('gh pr review 42 --approve')
+  })
+
+  it('names the tool when that is all Hermes gave', () => {
+    expect(waiting({ tool: 'bash', requestedAt: 1 })).toContain('bash')
+  })
+
+  it('always says how to unblock it, even with no detail at all', () => {
+    const text = waiting()
+    expect(text).toContain('sentinel0 approve pxr_1')
+    expect(text).toContain('--deny')
+  })
+
+  it('links the run when a dashboard url is configured', () => {
+    process.env.DASHBOARD_URL = 'https://sentinel0.example/'
+    try {
+      // The trailing slash is deliberate: an operator setting this variable
+      // will paste whatever the browser showed them.
+      expect(waiting()).toContain('<https://sentinel0.example/runs/pxr_1|open in the dashboard>')
+    } finally {
+      delete process.env.DASHBOARD_URL
+    }
+  })
+
+  it('stays inside the size other messages are held to', () => {
+    const text = waiting({ command: 'x'.repeat(5_000), requestedAt: 1 })
+    expect(text.length).toBeLessThan(900)
+  })
+})

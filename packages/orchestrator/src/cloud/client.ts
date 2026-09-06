@@ -10,7 +10,7 @@ import type {
 export interface RunnerCommand {
   id: string
   cursor: number
-  type: 'run' | 'cancel' | 'resync' | 'run-prompt'
+  type: 'run' | 'cancel' | 'resync' | 'run-prompt' | 'approve'
   payload: Record<string, unknown>
 }
 
@@ -97,9 +97,9 @@ export class CloudClient {
    * Periodic proof of life, with enough detail to be worth reading.
    *
    * The runner accepts no inbound connections, so nothing can ask it how it is
-   * doing — health has to be pushed or it does not exist. Sent once per poll
-   * cycle, which is roughly every 25 seconds against a 90-second staleness
-   * window, so three have to be missed before anything is reported wrong.
+   * doing — health has to be pushed or it does not exist. Sent on its own
+   * timer rather than once per poll cycle: a cycle takes as long as the work in
+   * it, so pacing health by it meant a busy runner looked like a dead one.
    */
   heartbeat(health: RunnerHealth): Promise<void> {
     return this.post<void>('/v1/runner/heartbeat', {
@@ -148,29 +148,68 @@ export class CloudClient {
     })
   }
 
+  // Every mirror write names its runner. Without it the cloud attributed runs
+  // to whichever runner it had heard from most recently, which is correct only
+  // while there is exactly one.
+  private get whoami(): string {
+    return `runner=${encodeURIComponent(this.config.runnerName)}`
+  }
+
   mirrorRun(run: RunRecord): Promise<void> {
-    return this.post<void>('/v1/runner/runs', { run })
+    return this.post<void>(`/v1/runner/runs?${this.whoami}`, { run })
   }
 
   mirrorRunUpdate(run: RunRecord): Promise<void> {
-    return this.request<void>(`/v1/runner/runs/${encodeURIComponent(run.id)}`, {
+    return this.request<void>(`/v1/runner/runs/${encodeURIComponent(run.id)}?${this.whoami}`, {
       method: 'PATCH',
       body: JSON.stringify({ run }),
     })
   }
 
   mirrorEvents(runId: string, events: RunLogEntry[]): Promise<void> {
-    return this.post<void>(`/v1/runner/runs/${encodeURIComponent(runId)}/events`, { events })
+    return this.post<void>(`/v1/runner/runs/${encodeURIComponent(runId)}/events?${this.whoami}`, {
+      events,
+    })
   }
 }
 
-/** What the runner reports about itself on each cycle. */
+/** What the runner reports about itself on each heartbeat. */
 export interface RunnerHealth {
   startedAt: string
   hermesOk: boolean
   hermesDetail: string
   activeRuns: number
   lastError: string | null
+  /**
+   * Per-agent liveness.
+   *
+   * The cloud previously had no way to say whether an agent was working -- the
+   * dashboard inferred it by counting run rows, which are exactly the rows that
+   * go stale when a runner restarts. The runner knows the truth, so it says so.
+   */
+  agents?: AgentHealth[]
+  /**
+   * Routing decisions that produced no run.
+   *
+   * A trigger that matches nothing, or matches a busy agent, is invisible
+   * today: it reaches local stdout and stops there. "Nothing happened and no
+   * one can tell you why" is the worst failure this system has, so a bounded
+   * tail of these rides along with health.
+   */
+  skips?: SkipReport[]
+}
+
+export interface AgentHealth {
+  profile: string
+  status: 'idle' | 'busy' | 'awaiting_approval'
+  runId?: string
+}
+
+export interface SkipReport {
+  reason: string
+  ref: string
+  routeId?: string
+  at: number
 }
 
 export type OutboxItem =
@@ -178,55 +217,171 @@ export type OutboxItem =
   | { kind: 'run-update'; run: RunRecord }
   | { kind: 'events'; runId: string; events: RunLogEntry[] }
 
+/** Storage the outbox needs. Narrowed so tests can stand in a fake. */
+export interface MirrorStore {
+  enqueueMirror(kind: string, payload: unknown): number
+  peekMirror(limit?: number): Array<{ seq: number; kind: string; payload: unknown }>
+  ackMirror(seq: number): void
+  countMirrorPending(): number
+  trimMirror(keep: number): number
+}
+
+export interface MirrorOutboxOptions {
+  /** How long to wait after an enqueue before draining, to batch bursts. */
+  debounceMs?: number
+  /** First retry delay after a failed send; doubles up to `maxBackoffMs`. */
+  backoffMs?: number
+  maxBackoffMs?: number
+  /** Backlog above which the oldest writes are dropped, loudly. */
+  maxPending?: number
+}
+
 /**
- * Buffers mirror writes so a cloud outage cannot stall or fail a run.
+ * Ships run state to the cloud, durably and promptly.
  *
- * Deliberately in-memory and bounded: the runner's SQLite is the source of
- * truth, so the cloud mirror is allowed to lose history rather than grow without
- * limit or block the dispatcher. A runner restart during an outage loses the
- * buffered tail, which is the accepted trade.
+ * Two things about this are load-bearing, and both were wrong before:
+ *
+ * 1. **It drains on its own.** The previous outbox was flushed by the poll
+ *    loop, whose last act is a 25-second long poll, so a status change waited
+ *    out the rest of a cycle before anyone off this network could see it. The
+ *    cloud is the only view of this runner from elsewhere; it may not lag by a
+ *    minute.
+ * 2. **It survives a restart.** The queue lives in SQLite, so a crash, a
+ *    deploy, or a cloud outage cannot silently strand a finished run in
+ *    "running" forever. Delivery is at-least-once: every mirror write is an
+ *    upsert, so a duplicate is harmless where a loss is not.
  */
 export class MirrorOutbox {
-  private queue: OutboxItem[] = []
+  private readonly debounceMs: number
+  private readonly backoffMs: number
+  private readonly maxBackoffMs: number
+  private readonly maxPending: number
+
+  private timer: NodeJS.Timeout | undefined
+  private draining = false
+  private stopped = false
+  private failures = 0
 
   constructor(
     private readonly client: CloudClient,
+    private readonly store: MirrorStore,
     private readonly onError: (message: string) => void,
-    private readonly maxItems = 500
-  ) {}
+    options: MirrorOutboxOptions = {}
+  ) {
+    this.debounceMs = options.debounceMs ?? 200
+    this.backoffMs = options.backoffMs ?? 1_000
+    this.maxBackoffMs = options.maxBackoffMs ?? 30_000
+    this.maxPending = options.maxPending ?? 10_000
+  }
 
   get size(): number {
-    return this.queue.length
+    return this.store.countMirrorPending()
   }
 
   enqueue(item: OutboxItem): void {
-    this.queue.push(item)
-    if (this.queue.length > this.maxItems) {
-      const dropped = this.queue.length - this.maxItems
-      this.queue.splice(0, dropped)
-      this.onError(`Mirror outbox full; dropped ${dropped} oldest item(s).`)
+    const { kind, ...payload } = item
+    this.store.enqueueMirror(kind, payload)
+
+    const pending = this.store.countMirrorPending()
+    if (pending > this.maxPending) {
+      const dropped = this.store.trimMirror(this.maxPending)
+      this.onError(`Mirror backlog over ${this.maxPending}; dropped ${dropped} oldest write(s).`)
+    }
+
+    this.schedule(this.debounceMs)
+  }
+
+  /** Begins draining whatever a previous process left behind. */
+  start(): void {
+    this.stopped = false
+    this.schedule(0)
+  }
+
+  stop(): void {
+    this.stopped = true
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = undefined
     }
   }
 
-  /** Flushes in order, stopping at the first failure so ordering is preserved. */
-  async flush(): Promise<void> {
-    while (this.queue.length > 0) {
-      const item = this.queue[0]
-      try {
-        if (item.kind === 'run') {
-          await this.client.mirrorRun(item.run)
-        } else if (item.kind === 'run-update') {
-          await this.client.mirrorRunUpdate(item.run)
-        } else {
-          await this.client.mirrorEvents(item.runId, item.events)
-        }
-        this.queue.shift()
-      } catch (error: unknown) {
-        this.onError(
-          `Cloud mirror deferred (${this.queue.length} pending): ${error instanceof Error ? error.message : String(error)}`
-        )
-        return
-      }
+  private schedule(delayMs: number): void {
+    if (this.stopped || this.timer || this.draining) {
+      return
     }
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      void this.flush()
+    }, delayMs)
+    // A pending flush must never hold the process open on its own.
+    this.timer.unref?.()
+  }
+
+  /**
+   * Sends everything pending, oldest first.
+   *
+   * Stops at the first failure so ordering is preserved -- a run update that
+   * overtook its own creation would be rejected -- and retries with backoff.
+   */
+  async flush(): Promise<void> {
+    if (this.draining || this.stopped) {
+      return
+    }
+    this.draining = true
+    try {
+      for (;;) {
+        const batch = this.store.peekMirror(50)
+        if (batch.length === 0) {
+          this.failures = 0
+          return
+        }
+
+        for (const entry of batch) {
+          try {
+            await this.send(entry.kind, entry.payload)
+            this.store.ackMirror(entry.seq)
+          } catch (error: unknown) {
+            this.failures += 1
+            const backoff = Math.min(
+              this.maxBackoffMs,
+              this.backoffMs * 2 ** Math.min(this.failures - 1, 5)
+            )
+            this.onError(
+              `Cloud mirror deferred (${this.store.countMirrorPending()} pending, retrying in ${Math.round(backoff / 1000)}s): ${error instanceof Error ? error.message : String(error)}`
+            )
+            this.draining = false
+            this.schedule(backoff)
+            return
+          }
+        }
+        this.failures = 0
+      }
+    } finally {
+      this.draining = false
+    }
+  }
+
+  private async send(kind: string, payload: unknown): Promise<void> {
+    const item = payload as Omit<OutboxItem, 'kind'> & {
+      run?: RunRecord
+      runId?: string
+      events?: RunLogEntry[]
+    }
+
+    if (kind === 'run' && item.run) {
+      await this.client.mirrorRun(item.run)
+      return
+    }
+    if (kind === 'run-update' && item.run) {
+      await this.client.mirrorRunUpdate(item.run)
+      return
+    }
+    if (kind === 'events' && item.runId && item.events) {
+      await this.client.mirrorEvents(item.runId, item.events)
+      return
+    }
+    // A row this process cannot interpret came from a newer build. Dropping it
+    // is better than blocking every later write behind it forever.
+    this.onError(`Discarding unrecognized mirror item of kind "${kind}".`)
   }
 }

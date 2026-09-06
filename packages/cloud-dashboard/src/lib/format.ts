@@ -123,3 +123,20 @@ export function uptime(startedAt: string, now = Date.now()): string {
   }
   return `${Math.floor(seconds / 86_400)}d ${Math.floor((seconds % 86_400) / 3600)}h`
 }
+
+/**
+ * Shortens a value for a place that has no room to grow.
+ *
+ * Used where CSS truncation cannot reach -- a dialog's `meta` line, a toast --
+ * rather than in table cells, which clip themselves.
+ */
+export function truncate(value: string, max = 60): string {
+  const flat = value.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat
+}
+
+/** The recognisable tail of an id, for captions and secondary lines. */
+export function shortId(id: string): string {
+  const body = id.includes('_') ? id.slice(id.indexOf('_') + 1) : id
+  return body.length > 10 ? `${body.slice(0, 10)}\u2026` : body
+}

@@ -187,7 +187,11 @@ export function Settings(): ReactNode {
                 registers itself on its first poll.
               </EmptyState>
             ) : (
-              <Table scrollLabel="Registered runners" containerClassName="px-tablewrap">
+              <Table
+                scrollLabel="Registered runners"
+                containerClassName="px-tablewrap"
+                minWidth={520}
+              >
                 <TableHead>
                   <TableRow>
                     <TableHeader>Runner</TableHeader>

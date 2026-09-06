@@ -7,7 +7,6 @@ import { useToast } from '@16-bits-design/ui/toast'
 import { api } from '../api/endpoints.js'
 import { useKey } from '../lib/session.js'
 import { useResource } from '../lib/useResource.js'
-import { Code } from '@16-bits-design/ui/code'
 import {
   Table,
   TableBody,
@@ -22,7 +21,41 @@ import { ErrorPanel } from '../components/ErrorPanel.js'
 import { Spinner } from '@16-bits-design/ui/spinner'
 import { PageHeader } from '../components/PageHeader.js'
 import { Panel } from '../components/Panel.js'
+import { Text } from '@16-bits-design/ui/typography'
 import type { Project } from '../api/types.js'
+
+/**
+ * A project's filters on one line.
+ *
+ * `owner/repo · labels: a, b` rather than the raw object: the filters are how
+ * an operator recognises a row, and the JSON was three lines of punctuation to
+ * say the same thing.
+ */
+function summarizeFilters(filters: Record<string, unknown> | null | undefined): string {
+  const parts: string[] = []
+  const value = (key: string): string | undefined => {
+    const raw = filters?.[key]
+    return typeof raw === 'string' && raw ? raw : undefined
+  }
+
+  const owner = value('owner')
+  const repo = value('repo')
+  if (owner && repo) {
+    parts.push(`${owner}/${repo}`)
+  }
+  for (const key of ['team', 'project', 'state'] as const) {
+    const found = value(key)
+    if (found) {
+      parts.push(`${key}: ${found}`)
+    }
+  }
+  const labels = filters?.labels
+  if (Array.isArray(labels) && labels.length > 0) {
+    parts.push(`labels: ${labels.join(', ')}`)
+  }
+
+  return parts.length > 0 ? parts.join('  ·  ') : 'no filters'
+}
 
 export function Projects(): ReactNode {
   const key = useKey()
@@ -73,7 +106,7 @@ export function Projects(): ReactNode {
             The runner polls nothing until a project exists, so no route can ever fire.
           </EmptyState>
         ) : (
-          <Table scrollLabel="Registered projects" containerClassName="px-tablewrap">
+          <Table scrollLabel="Registered projects" containerClassName="px-tablewrap" minWidth={520}>
             <TableHead>
               <TableRow>
                 <TableHeader>Project</TableHeader>
@@ -95,11 +128,13 @@ export function Projects(): ReactNode {
                   </TableCell>
                   <TableCell>
                     {/*
-                     * The label is rendered, not just announced, so it is kept
-                     * short: the row already names the project, and repeating
-                     * it inside the cell is noise on every row.
+                     * One line, not pretty-printed JSON. A multi-line <Code>
+                     * block in a table cell was the widest thing on the page
+                     * and forced every projects table to scroll sideways.
                      */}
-                    <Code label="Filters">{JSON.stringify(project.filters ?? {}, null, 2)}</Code>
+                    <Text size="small" tone="soft" className="px-cellclip">
+                      {summarizeFilters(project.filters)}
+                    </Text>
                   </TableCell>
                   <TableCell>
                     <div className="px-rowactions">

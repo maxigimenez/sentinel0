@@ -74,7 +74,7 @@ export function RouteList(): ReactNode {
             Nothing will start an agent until a route exists.
           </EmptyState>
         ) : (
-          <Table scrollLabel="Routes" containerClassName="px-tablewrap">
+          <Table scrollLabel="Routes" containerClassName="px-tablewrap" minWidth={560}>
             <TableHead>
               <TableRow>
                 <TableHeader>Route</TableHeader>
@@ -101,7 +101,7 @@ export function RouteList(): ReactNode {
                     />
                   </TableCell>
                   <TableCell>
-                    <Text size="small" tone="soft">
+                    <Text size="small" tone="soft" className="px-cellclip">
                       {route.target?.agentRef?.profile ??
                         route.target?.agentRef?.githubLogin ??
                         '—'}
