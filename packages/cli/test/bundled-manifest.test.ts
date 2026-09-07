@@ -1,12 +1,28 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error — the pack script is plain .mjs with no type declarations.
-import { bundledManifest, unresolvableExports } from '../scripts/prepare-package.mjs'
+import { bundledManifest } from '../scripts/prepare-package.mjs'
 
 const ROOT = join(process.cwd(), '..', '..')
 const BUNDLED = ['packages/common', 'packages/orchestrator']
+
+/** Every file path a manifest's `main`, `types` and `exports` point at. */
+function exportTargets(manifest: Record<string, any>): string[] {
+  const targets: string[] = []
+  const visit = (target: unknown): void => {
+    if (typeof target === 'string') {
+      targets.push(target)
+    } else if (target && typeof target === 'object') {
+      Object.values(target).forEach(visit)
+    }
+  }
+  visit(manifest.main)
+  visit(manifest.types)
+  visit(manifest.exports)
+  return targets
+}
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true, recursive: true })
@@ -60,12 +76,31 @@ describe('bundled manifests', () => {
     expect(bundled).not.toHaveProperty('files')
   })
 
-  it.each(BUNDLED)('names only files %s actually builds', (relative) => {
-    // Requires a build, which CI runs before the tests for exactly this kind
-    // of check. An entry pointing at a module tsc never emitted fails the same
-    // way the drift above did, just with ERR_MODULE_NOT_FOUND.
-    const packageDir = join(ROOT, relative)
-    expect(unresolvableExports(bundledManifest(manifest(relative)), packageDir)).toEqual([])
+  it.each(BUNDLED)('names only modules %s actually has', (relative) => {
+    // An entry pointing at a module that does not exist fails the same way the
+    // drift above did, just with ERR_MODULE_NOT_FOUND.
+    //
+    // This checks the *source* rather than `dist/`, deliberately. The obvious
+    // version reads the built files and passes only after a build — which
+    // `ci.yml` does run first, and `publish-cli.yml` does not, so it broke the
+    // 0.0.4 release. Guarding it with `skipIf(!existsSync(dist))` would have
+    // been worse: green, and testing nothing, on the one path that publishes.
+    // `prepare-package.mjs` still asserts against real `dist/` at pack time,
+    // where a build has just run and cannot be absent.
+    const problems: string[] = []
+
+    for (const target of exportTargets(bundledManifest(manifest(relative)))) {
+      const module = /^\.\/dist\/(.+)\.(?:d\.ts|js)$/.exec(target)
+      if (!module) {
+        problems.push(`${target} — not a ./dist/<module>.{js,d.ts} path this can map to source`)
+        continue
+      }
+      if (!existsSync(join(ROOT, relative, 'src', `${module[1]}.ts`))) {
+        problems.push(`${target} — no src/${module[1]}.ts to build it from`)
+      }
+    }
+
+    expect(problems).toEqual([])
   })
 
   it('exports every subpath the workspace imports from @sentinel0/common', () => {
