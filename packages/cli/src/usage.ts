@@ -32,6 +32,8 @@ export function printUsage(version: string): void {
       '    approve <run-id> [--deny]   answer an agent waiting for permission',
       '',
       chalk.bold('  Debugging'),
+      '    explain [--project <id>] [--ref <owner/repo#n>]',
+      chalk.dim('                                why each route did or did not match'),
       '    run --agent <profile> --prompt "..."',
       chalk.dim('                                send one prompt straight to Hermes'),
       '',

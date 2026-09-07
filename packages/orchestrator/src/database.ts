@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import path from 'node:path'
 import {
   RUN_STATUS,
+  TRIGGER_TYPE,
   isTerminalRunStatus,
   type RunApprovalDetail,
   type RunLogEntry,
@@ -34,6 +35,57 @@ function addColumn(db: DatabaseSync, table: string, column: string, definition: 
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
   if (!columns.some((existing) => existing.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  }
+}
+
+/**
+ * Rewrites observation rows that were keyed `<triggerType>:<ref>` onto the bare
+ * ref.
+ *
+ * The old key gave every trigger type its own baseline for the same item, which
+ * quietly made `pr_review_requested` transitions impossible to detect: that
+ * event is only emitted once a reviewer exists, so its very first row was
+ * written at the moment of the transition a route wanted to fire on — and
+ * first sight reports no changes. `pr_event` is emitted for every open pull
+ * request whether or not anyone has been asked to review, so its row is the one
+ * holding the true history; it wins where both exist, and the rest are dropped.
+ *
+ * Without this a running install would go quiet for one cycle after upgrading,
+ * reseeding a baseline it already had.
+ */
+function migrateObservationKeys(db: DatabaseSync): void {
+  const legacy = db
+    .prepare("SELECT projectId, ref FROM observations WHERE ref LIKE '%:%'")
+    .all() as { projectId: string; ref: string }[]
+
+  const prefixes = Object.values(TRIGGER_TYPE).map((type) => `${type}:`)
+
+  // pr_event is emitted for every open pull request whether or not a review was
+  // requested, so its row is the one holding real history. Promoting it last
+  // lets it overwrite whatever a narrower type seeded.
+  const rank = (ref: string): number => (ref.startsWith(`${TRIGGER_TYPE.PR_EVENT}:`) ? 1 : 0)
+  legacy.sort((a, b) => rank(a.ref) - rank(b.ref))
+
+  for (const row of legacy) {
+    const prefix = prefixes.find((candidate) => row.ref.startsWith(candidate))
+    // A ref that merely contains a colon and was never one of ours.
+    if (prefix) {
+      db.prepare(
+        `INSERT INTO observations (projectId, ref, labels, assignees, reviewers, observedAt)
+         SELECT projectId, ?, labels, assignees, reviewers, observedAt
+           FROM observations WHERE projectId = ? AND ref = ?
+         ON CONFLICT (projectId, ref) DO UPDATE SET
+           labels = excluded.labels,
+           assignees = excluded.assignees,
+           reviewers = excluded.reviewers,
+           observedAt = excluded.observedAt`
+      ).run(row.ref.slice(prefix.length), row.projectId, row.ref)
+
+      db.prepare('DELETE FROM observations WHERE projectId = ? AND ref = ?').run(
+        row.projectId,
+        row.ref
+      )
+    }
   }
 }
 
@@ -97,6 +149,10 @@ function migrate(db: DatabaseSync): void {
 
   // What each item looked like last cycle, so "label added" can mean added
   // rather than merely present.
+  //
+  // Keyed by the item, not by the trigger type it raised. One pull request can
+  // raise two events, and giving each its own baseline made the transition
+  // history of the narrower one useless -- see migrateObservationKeys.
   db.exec(`
     CREATE TABLE IF NOT EXISTS observations (
       projectId  TEXT NOT NULL,
@@ -130,6 +186,7 @@ function migrate(db: DatabaseSync): void {
   // Existing installs predate these columns; `CREATE TABLE IF NOT EXISTS` alone
   // would leave them behind on every machine that has already run.
   addColumn(db, 'runs', 'approvalDetail', 'TEXT')
+  migrateObservationKeys(db)
 
   db.exec('CREATE INDEX IF NOT EXISTS idx_runs_updated ON runs(updatedAt DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updatedAt DESC)')
@@ -423,11 +480,7 @@ export class Sentinel0Database {
     current: { labels: string[]; assignees: string[]; reviewers: string[] },
     now: number = Date.now()
   ): TriggerChanges | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT labels, assignees, reviewers FROM observations WHERE projectId = ? AND ref = ?'
-      )
-      .get(projectId, ref) as { labels: string; assignees: string; reviewers: string } | undefined
+    const changes = this.changesSince(projectId, ref, current)
 
     this.db
       .prepare(
@@ -448,6 +501,27 @@ export class Sentinel0Database {
         now
       )
 
+    return changes
+  }
+
+  /**
+   * What changed, without recording anything.
+   *
+   * The read half of `observe`, split out for the explain endpoint: asking why
+   * a route did not fire must not move the baseline it is being asked about,
+   * or the question would answer itself differently every time it is put.
+   */
+  changesSince(
+    projectId: string,
+    ref: string,
+    current: { labels: string[]; assignees: string[]; reviewers: string[] }
+  ): TriggerChanges | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT labels, assignees, reviewers FROM observations WHERE projectId = ? AND ref = ?'
+      )
+      .get(projectId, ref) as { labels: string; assignees: string; reviewers: string } | undefined
+
     if (!row) {
       return undefined
     }
@@ -465,6 +539,17 @@ export class Sentinel0Database {
       assigneesRemoved: added(current.assignees, previous.assignees),
       reviewersAdded: added(previous.reviewers, current.reviewers),
     }
+  }
+
+  /**
+   * Re-runs the observation key migration.
+   *
+   * Exposed because a migration that only ever runs inside the constructor
+   * cannot be tested, and this one decides whether a live install keeps the
+   * history it already had or goes quiet for a cycle. It is idempotent.
+   */
+  migrateObservationKeys(): void {
+    migrateObservationKeys(this.db)
   }
 
   pruneObservations(olderThan: number): number {

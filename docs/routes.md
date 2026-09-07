@@ -76,6 +76,13 @@ every label would look newly added, and creating a route would fire it across yo
 entire backlog. A new route starts quiet and acts on what happens next — so to test
 one, add and remove the label once while the runner is up.
 
+"First seen" means the *item*, not the trigger type. One pull request raises both a
+`pr_event` and — while a review is outstanding — a `pr_review_requested`, and both read
+the same history. This matters because `pr_review_requested` only exists once a
+reviewer does: were it to keep its own baseline, that baseline would begin at the very
+moment of the request, first sight would suppress it, and a `reviewersAdded` route on
+that trigger could never fire at all. It used to work exactly that way.
+
 `labels` asks *does it have this now*. `labelsAdded` asks *was it just added*. Pick the
 second when the act is the signal.
 
@@ -267,7 +274,28 @@ pause, unlabel to resume.
 
 ## Troubleshooting
 
-**Nothing fired.** Watch one poll cycle — the runner prints a summary line:
+**Nothing fired.** Ask the runner directly:
+
+```bash
+sentinel0 explain                        # every visible trigger, every route
+sentinel0 explain --ref acme/www#42      # just this one
+```
+
+It re-collects triggers and prints, per item, the one clause that rejected it:
+
+```
+  - acme/www#42 pr_review_requested  Fix the export
+      changed  nothing changed since the last poll
+      skips    Reviewer agent: match.reviewersAdded wants any of [EomiAIBot]; nothing
+               changed there this cycle (nothing)
+```
+
+It reads history without recording any, so asking does not consume the transition you
+are asking about, and the answer is the same every time until something really changes.
+A *matching* route can still not run — the dedupe ledger, the one-run-per-agent rule and
+agent resolution all come after matching, and the cycle summary reports those.
+
+For the cycle's own view, the runner prints a summary line:
 
 ```
 poll: 12 event(s) (taplands 12) · dispatched 1 · skipped 11 (no-route 10, duplicate 1)
@@ -281,8 +309,9 @@ matched. `unknown-agent` means the route names a profile absent from `sentinel0 
 `sentinel0:done` — remove it to re-arm, or switch to `per-change` with a transition
 clause.
 
-**A transition route never fires.** It needs a prior observation. Add and remove the
-label once while the runner is up.
+**A transition route never fires.** It needs a prior observation. `sentinel0 explain`
+says `never been observed before` when that is the reason; add and remove the label once
+while the runner is up.
 
 **Everything fired at once when I created a route.** A state clause (`labels`) matches
 everything currently carrying the label. Use `labelsAdded` if you meant the act.

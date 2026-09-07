@@ -12,6 +12,7 @@ import type {
   LogsCommandOptions,
   RunCommandOptions,
   RunnerCommandOptions,
+  ExplainCommandOptions,
   RunsCommandOptions,
   StartCommandOptions,
 } from './types.js'
@@ -108,6 +109,11 @@ export function parseRunsOptions(args: string[]): RunsCommandOptions {
     status: valueOf(args, '--status'),
     limit: parseIntOption(valueOf(args, '--limit'), '--limit', 20, 1, 200),
   }
+}
+
+export function parseExplainOptions(args: string[]): ExplainCommandOptions {
+  assertKnownFlags(args, ['--project', '--ref'], 'explain')
+  return { projectId: valueOf(args, '--project'), ref: valueOf(args, '--ref') }
 }
 
 export function parseRunOptions(args: string[]): RunCommandOptions {

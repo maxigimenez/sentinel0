@@ -9,10 +9,12 @@ import {
   type ProjectConfig,
   type RoutingRule,
   type RunStatus,
+  type TriggerEvent,
 } from '@sentinel0/common'
 import type { Sentinel0Database } from '../database.js'
 import { readRunnerErrors } from './diagnostics.js'
 import { isAllowedBrowserOrigin } from './network-access.js'
+import { explainRule } from '../routing/rule-engine.js'
 
 export interface ApiServerDeps {
   getConfig: () => AppConfig
@@ -24,6 +26,71 @@ export interface ApiServerDeps {
   approveRun: (runId: string, choice: ApprovalChoice) => Promise<{ ok: boolean; reason?: string }>
   db: Sentinel0Database
   dataDir: string
+  /**
+   * Re-collects triggers for one project, or for all of them.
+   *
+   * Separate from the poll loop's own collection so that asking the question
+   * does not record an answer: see `explainRouting`.
+   */
+  collectTriggers: (projectId?: string) => Promise<TriggerEvent[]>
+}
+
+/**
+ * Why every route did or did not select every trigger currently visible.
+ *
+ * Deliberately computed live rather than read from a log. The failure this
+ * addresses is a route that produces no output at all, and the operator's
+ * question is always about the item in front of them right now -- so the
+ * useful answer names that item, that route, and the one clause that rejected
+ * it, rather than a cycle summary that says `no-route` about a repository.
+ *
+ * It reads history through `changesSince` and never calls `observe`, because a
+ * diagnostic that advanced the baseline would consume the very transition the
+ * operator is asking about, and answer differently the second time it is asked.
+ */
+function explainRouting(
+  deps: ApiServerDeps,
+  events: readonly TriggerEvent[],
+  routes: readonly RoutingRule[]
+) {
+  return events.map((event) => {
+    const changes = deps.db.changesSince(event.projectId, event.ref, {
+      labels: event.labels,
+      assignees: event.assignees ?? [],
+      reviewers: event.requestedReviewers ?? [],
+    })
+    const observed = { ...event, changes }
+
+    const verdicts = routes.map((route) => {
+      const reason = explainRule(route, observed)
+      return {
+        routeId: route.id,
+        routeName: route.name,
+        matched: reason === undefined,
+        reason,
+      }
+    })
+
+    return {
+      ref: event.ref,
+      type: event.type,
+      projectId: event.projectId,
+      title: event.title,
+      url: event.url,
+      labels: event.labels,
+      assignees: event.assignees ?? [],
+      requestedReviewers: event.requestedReviewers ?? [],
+      /** Absent means this item has never been polled before. */
+      changes,
+      /**
+       * A matching route still may not run: the dispatch ledger, the one-run-
+       * per-agent rule and agent resolution all come after this point, and the
+       * cycle summary reports those as `duplicate`, `agent-busy` and
+       * `unknown-agent` respectively.
+       */
+      verdicts,
+    }
+  })
 }
 
 function parsePositiveInt(raw: unknown, label: string, fallback: number): number {
@@ -87,6 +154,28 @@ export async function createApiServer(deps: ApiServerDeps): Promise<FastifyInsta
   app.get('/agents', async () => ({ agents: deps.getAgents() }))
 
   app.get('/routes', async () => ({ routes: deps.getRoutes() }))
+
+  app.get('/routes/explain', async (request, reply) => {
+    const query = request.query as Record<string, string | undefined>
+    const projectId = query.project
+    if (projectId && !deps.getProjects().some((project) => project.id === projectId)) {
+      return reply.code(404).send({ error: `No project "${projectId}" is configured.` })
+    }
+
+    try {
+      const events = await deps.collectTriggers(projectId)
+      const wanted = query.ref
+      return {
+        items: explainRouting(
+          deps,
+          wanted ? events.filter((event) => event.ref === wanted) : events,
+          deps.getRoutes()
+        ),
+      }
+    } catch (error: unknown) {
+      return reply.code(502).send({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
 
   app.get('/runs', async (request, reply) => {
     const query = request.query as Record<string, string | undefined>

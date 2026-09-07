@@ -5,7 +5,13 @@ import {
   type RoutingRule,
   type TriggerEvent,
 } from '@sentinel0/common'
-import { dedupeKey, evaluate, matchesRule, matchesSet } from '../../src/routing/rule-engine.js'
+import {
+  dedupeKey,
+  evaluate,
+  explainRule,
+  matchesRule,
+  matchesSet,
+} from '../../src/routing/rule-engine.js'
 
 function rule(overrides: Partial<RoutingRule> = {}): RoutingRule {
   return {
@@ -180,5 +186,71 @@ describe('dedupeKey', () => {
       dedupeKey(rule({ id: 'rt_b' }), event())
     )
     expect(dedupeKey(rule(), event())).not.toBe(dedupeKey(rule(), event({ ref: 'LIN-999' })))
+  })
+})
+
+describe('explainRule', () => {
+  it('says nothing when the rule matches', () => {
+    expect(explainRule(rule(), event())).toBeUndefined()
+  })
+
+  it('agrees with matchesRule, which is defined in terms of it', () => {
+    const cases: Array<[RoutingRule, TriggerEvent]> = [
+      [rule(), event()],
+      [rule({ enabled: false }), event()],
+      [rule({ match: { labels: { any: ['nope'] } } }), event()],
+      [rule({ trigger: { type: TRIGGER_TYPE.PR_EVENT, projectId: 'taplands' } }), event()],
+      [rule({ match: { titleMatches: 'billing' } }), event()],
+    ]
+    for (const [candidate, incoming] of cases) {
+      expect(matchesRule(candidate, incoming)).toBe(explainRule(candidate, incoming) === undefined)
+    }
+  })
+
+  it('names the disabled route rather than a clause', () => {
+    expect(explainRule(rule({ enabled: false }), event())).toBe('the route is disabled')
+  })
+
+  it('reports the clause that rejected, and what the event actually had', () => {
+    const reason = explainRule(rule({ match: { labels: { any: ['urgent'] } } }), event())
+    expect(reason).toContain('match.labels')
+    expect(reason).toContain('urgent')
+    expect(reason).toContain('feasibility')
+  })
+
+  it('distinguishes "no history yet" from "nothing changed"', () => {
+    const onLabel = rule({ match: { labelsAdded: { any: ['urgent'] } } })
+
+    expect(explainRule(onLabel, event())).toContain('never been observed before')
+    expect(
+      explainRule(
+        onLabel,
+        event({
+          changes: {
+            labelsAdded: [],
+            labelsRemoved: [],
+            assigneesAdded: [],
+            assigneesRemoved: [],
+            reviewersAdded: [],
+          },
+        })
+      )
+    ).toContain('nothing changed there')
+  })
+
+  it('explains an agent addressed by a login nobody named on the item', () => {
+    const targeted = rule({
+      trigger: { type: TRIGGER_TYPE.PR_EVENT, projectId: 'taplands' },
+      target: { agentRef: { githubLogin: 'EomiAIBot' } },
+    })
+    const reason = explainRule(targeted, event({ type: TRIGGER_TYPE.PR_EVENT, assignees: [] }))
+
+    expect(reason).toContain('EomiAIBot')
+    expect(reason).toContain('neither assigned to nor a requested reviewer')
+  })
+
+  it('explains a marker label holding a once-route back', () => {
+    const once = rule({ guard: { refire: 'once', markers: true } })
+    expect(explainRule(once, event({ labels: ['sentinel0:done'] }))).toContain('re-arm')
   })
 })

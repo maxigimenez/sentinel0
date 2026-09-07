@@ -62,9 +62,20 @@ function matchesPattern(pattern: string | undefined, value: string): boolean {
   }
 }
 
-export function matchesRule(rule: RoutingRule, event: TriggerEvent): boolean {
+/**
+ * Why a rule did not select an event, in the operator's own vocabulary, or
+ * undefined when it did.
+ *
+ * `matchesRule` is defined in terms of this rather than beside it. A route that
+ * silently does nothing is the hardest failure this system has: the log says
+ * `no-route`, which is equally consistent with a typo'd login, a transition
+ * that was never recorded, and a route that is simply switched off. Two
+ * implementations -- one deciding, one explaining -- would eventually disagree,
+ * and the explanation is only worth having if it is the decision.
+ */
+export function explainRule(rule: RoutingRule, event: TriggerEvent): string | undefined {
   if (!rule.enabled) {
-    return false
+    return 'the route is disabled'
   }
 
   // Never start a second agent on something a run is already working on. This
@@ -72,77 +83,74 @@ export function matchesRule(rule: RoutingRule, event: TriggerEvent): boolean {
   // the change would re-trigger the very route that started the work.
   const present = new Set(normalize(event.labels))
   if (present.has(SENTINEL0_LABEL.IN_PROGRESS)) {
-    return false
+    return `${event.ref} carries ${SENTINEL0_LABEL.IN_PROGRESS}, so a run is already working on it`
   }
 
   // A route that fires once per item also declines anything it already
   // finished. Removing the marker by hand is how a human re-arms it.
   const guard = guardOf(rule)
   if (guard.refire === 'once' && guard.markers) {
-    if (present.has(SENTINEL0_LABEL.DONE) || present.has(SENTINEL0_LABEL.FAILED)) {
-      return false
+    const marker = [SENTINEL0_LABEL.DONE, SENTINEL0_LABEL.FAILED].find((label) =>
+      present.has(label)
+    )
+    if (marker) {
+      return `${event.ref} carries ${marker} and guard.refire is "once"; remove the label to re-arm it`
     }
   }
   if (rule.trigger.type !== event.type) {
-    return false
+    return `trigger.type is ${rule.trigger.type}, the event is ${event.type}`
   }
   if (rule.trigger.projectId !== event.projectId) {
-    return false
+    return `trigger.projectId is "${rule.trigger.projectId}", the event is from "${event.projectId}"`
   }
   if (rule.trigger.provider && rule.trigger.provider !== event.provider) {
-    return false
+    return `trigger.provider is ${rule.trigger.provider}, the event came from ${event.provider}`
   }
 
-  if (!matchesSet(rule.match.labels, event.labels)) {
-    return false
+  const state = [
+    ['match.labels', rule.match.labels, event.labels],
+    ['match.state', rule.match.state, event.state ? [event.state] : []],
+    ['match.assignees', rule.match.assignees, event.assignees ?? []],
+    ['match.reviewers', rule.match.reviewers, event.requestedReviewers ?? []],
+    ['match.baseBranch', rule.match.baseBranch, event.baseBranch ? [event.baseBranch] : []],
+  ] as const
+
+  for (const [name, match, values] of state) {
+    if (!matchesSet(match, values)) {
+      return `${name} ${describeSet(match)}; the event has ${describeValues(values)}`
+    }
   }
-  if (!matchesSet(rule.match.state, event.state ? [event.state] : [])) {
-    return false
-  }
-  if (!matchesSet(rule.match.assignees, event.assignees ?? [])) {
-    return false
-  }
-  if (!matchesSet(rule.match.reviewers, event.requestedReviewers ?? [])) {
-    return false
-  }
-  if (!matchesSet(rule.match.baseBranch, event.baseBranch ? [event.baseBranch] : [])) {
-    return false
-  }
+
   if (rule.match.isDraft !== undefined && rule.match.isDraft !== (event.isDraft ?? false)) {
-    return false
+    return `match.isDraft is ${rule.match.isDraft}, the pull request is ${event.isDraft ?? false}`
   }
 
   // Transition clauses need history. On first sight there is none, so a route
   // keyed on "label added" stays quiet rather than firing across a backlog of
   // items that happen to already carry the label.
-  const wantsTransition =
-    rule.match.labelsAdded !== undefined ||
-    rule.match.labelsRemoved !== undefined ||
-    rule.match.assigneesAdded !== undefined ||
-    rule.match.reviewersAdded !== undefined
+  const transitions = [
+    ['match.labelsAdded', rule.match.labelsAdded, event.changes?.labelsAdded],
+    ['match.labelsRemoved', rule.match.labelsRemoved, event.changes?.labelsRemoved],
+    ['match.assigneesAdded', rule.match.assigneesAdded, event.changes?.assigneesAdded],
+    ['match.reviewersAdded', rule.match.reviewersAdded, event.changes?.reviewersAdded],
+  ] as const
 
+  const wantsTransition = transitions.some(([, match]) => match !== undefined)
   if (wantsTransition) {
     if (!event.changes) {
-      return false
+      return `${event.ref} has never been observed before, and a transition clause needs a previous sighting to compare against; it will be evaluated from the next poll onward`
     }
-    if (!matchesSet(rule.match.labelsAdded, event.changes.labelsAdded)) {
-      return false
-    }
-    if (!matchesSet(rule.match.labelsRemoved, event.changes.labelsRemoved)) {
-      return false
-    }
-    if (!matchesSet(rule.match.assigneesAdded, event.changes.assigneesAdded)) {
-      return false
-    }
-    if (!matchesSet(rule.match.reviewersAdded, event.changes.reviewersAdded)) {
-      return false
+    for (const [name, match, values] of transitions) {
+      if (!matchesSet(match, values ?? [])) {
+        return `${name} ${describeSet(match)}; nothing changed there this cycle (${describeValues(values ?? [])})`
+      }
     }
   }
   if (!matchesPattern(rule.match.titleMatches, event.title)) {
-    return false
+    return `match.titleMatches /${rule.match.titleMatches}/ does not match "${event.title}"`
   }
   if (!matchesPattern(rule.match.bodyMatches, event.body)) {
-    return false
+    return `match.bodyMatches /${rule.match.bodyMatches}/ does not match the body`
   }
 
   // A rule targeting an agent by GitHub identity only fires when that identity
@@ -156,16 +164,35 @@ export function matchesRule(rule: RoutingRule, event: TriggerEvent): boolean {
   // review. A dead route that reports no error is worse than a rejected one.
   const githubLogin = rule.target.agentRef.githubLogin
   if (githubLogin) {
-    const named = new Set([
-      ...normalize(event.requestedReviewers ?? []),
-      ...normalize(event.assignees ?? []),
-    ])
-    if (!named.has(githubLogin.trim().toLowerCase())) {
-      return false
+    const named = [...(event.requestedReviewers ?? []), ...(event.assignees ?? [])]
+    if (!new Set(normalize(named)).has(githubLogin.trim().toLowerCase())) {
+      return `target.agentRef.githubLogin is "${githubLogin}", who is neither assigned to nor a requested reviewer on ${event.ref} (${describeValues(named)})`
     }
   }
 
-  return true
+  return undefined
+}
+
+function describeSet(match: StringSetMatch | undefined): string {
+  const parts: string[] = []
+  if (match?.any?.length) {
+    parts.push(`wants any of [${match.any.join(', ')}]`)
+  }
+  if (match?.all?.length) {
+    parts.push(`wants all of [${match.all.join(', ')}]`)
+  }
+  if (match?.none?.length) {
+    parts.push(`excludes [${match.none.join(', ')}]`)
+  }
+  return parts.join(' and ') || 'imposes no constraint'
+}
+
+function describeValues(values: readonly string[]): string {
+  return values.length > 0 ? `[${values.join(', ')}]` : 'nothing'
+}
+
+export function matchesRule(rule: RoutingRule, event: TriggerEvent): boolean {
+  return explainRule(rule, event) === undefined
 }
 
 /**
