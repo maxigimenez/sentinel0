@@ -150,6 +150,11 @@ exactly like a working one.
 **Losing or rotating this key makes every stored credential unreadable.** They are not
 recoverable; re-add them under Settings → Integrations.
 
+It is declared in `.railway/railway.ts` as `preserve()`, which is what keeps
+`railway config apply` from removing it. A variable set only in the dashboard and not
+named in that file is deleted on the next apply — so anything you add there by hand
+needs a line there too.
+
 Optional variables:
 
 | Variable | Default | Purpose |
@@ -187,7 +192,7 @@ Confirm:
 
 ```bash
 curl https://<your-service>.up.railway.app/health
-# {"status":"ok","version":"0.0.1"}
+# {"status":"ok","version":"0.0.3"}
 ```
 
 `/health` is unauthenticated on purpose: the health check has to pass before any key

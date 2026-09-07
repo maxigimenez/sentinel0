@@ -196,7 +196,7 @@ things that only fail on a user's machine:
 ### Doing it by hand
 
 ```bash
-pnpm version:set 0.0.2                 # every package, and the cli's internal pins
+pnpm version:set 0.0.4                 # every package, and the cli's internal pins
 pnpm install --lockfile-only           # the lockfile records those pins
 pnpm lint && pnpm test && pnpm build
 
@@ -215,7 +215,7 @@ To test a tarball without publishing:
 
 ```bash
 mkdir /tmp/t && cd /tmp/t && npm init -y
-npm install /path/to/sentinel0-0.0.1.tgz
+npm install /path/to/sentinel0-0.0.3.tgz
 ./node_modules/.bin/sentinel0 --version
 ```
 
