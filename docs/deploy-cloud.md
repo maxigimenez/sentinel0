@@ -135,7 +135,22 @@ In the service's Variables tab, reference the database:
 DATABASE_URL = ${{Postgres.DATABASE_URL}}
 ```
 
-That is the only required variable. Optional ones:
+`SENTINEL0_SECRET_KEY` is required as well, before any tracker credential can be
+stored. Thirty-two random bytes, base64 or hex:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+It encrypts GitHub and Linear tokens at rest with AES-256-GCM. The API refuses to
+start storing credentials without it rather than deriving a key from nothing — a
+deployment that quietly encrypted every token under a guessable constant would look
+exactly like a working one.
+
+**Losing or rotating this key makes every stored credential unreadable.** They are not
+recoverable; re-add them under Settings → Integrations.
+
+Optional variables:
 
 | Variable | Default | Purpose |
 |---|---|---|

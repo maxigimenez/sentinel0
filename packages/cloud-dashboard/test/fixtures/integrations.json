@@ -1,0 +1,26 @@
+{
+  "integrations": [
+    {
+      "provider": "github",
+      "projectId": null,
+      "tokenPrefix": "github_pat_1",
+      "accountLogin": "sentinel0-bot",
+      "scopes": [],
+      "createdAt": "2026-09-01T10:12:04.221Z",
+      "updatedAt": "2026-09-01T10:12:04.221Z",
+      "lastVerifiedAt": "2026-09-01T10:12:04.221Z",
+      "lastError": null
+    },
+    {
+      "provider": "github",
+      "projectId": "acme/platform",
+      "tokenPrefix": "ghp_example0",
+      "accountLogin": "acme-ci",
+      "scopes": ["repo"],
+      "createdAt": "2026-09-03T08:44:19.507Z",
+      "updatedAt": "2026-09-03T08:44:19.507Z",
+      "lastVerifiedAt": "2026-09-03T08:44:19.507Z",
+      "lastError": "GitHub GET /user failed (401): Bad credentials"
+    }
+  ]
+}

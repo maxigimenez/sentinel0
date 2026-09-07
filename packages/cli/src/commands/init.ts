@@ -237,18 +237,38 @@ export async function runInit(context: CliContext): Promise<void> {
     return
   }
 
-  // ── Secrets ──────────────────────────────────────────────
+  /*
+   * ── Secrets ──────────────────────────────────────────────
+   *
+   * Tracker credentials belong in the cloud now, under Settings →
+   * Integrations: one place for the whole organization, encrypted at rest, and
+   * the only way the dashboard can offer a repository picker. What stays here
+   * is a *fallback*, for the two cases the cloud cannot serve -- a runner with
+   * no control plane, and a runner restarting while the cloud is unreachable.
+   *
+   * So this asks once, and only if the operator says they want one.
+   */
   const secrets = { ...existing.secrets }
-  const needsLinear = assertNotCancel(
-    await p.confirm({ message: 'Will any project pull from Linear?', initialValue: false })
+  const wantsLocalTokens = assertNotCancel(
+    await p.confirm({
+      message: 'Store tracker credentials on this machine as a fallback?',
+      initialValue: false,
+    })
   )
-  if (needsLinear && !secrets.LINEAR_API_KEY) {
-    secrets.LINEAR_API_KEY = assertNotCancel(
-      await p.password({
-        message: 'Linear API key',
-        validate: (value) => (value?.trim() ? undefined : 'Required.'),
-      })
+  if (wantsLocalTokens) {
+    const githubToken = assertNotCancel(
+      await p.password({ message: 'GitHub token (blank to skip)' })
     )
+    if (githubToken?.trim()) {
+      secrets.GITHUB_TOKEN = githubToken.trim()
+    }
+
+    const linearKey = assertNotCancel(
+      await p.password({ message: 'Linear API key (blank to skip)' })
+    )
+    if (linearKey?.trim()) {
+      secrets.LINEAR_API_KEY = linearKey.trim()
+    }
   }
 
   const config: StoredConfig = {

@@ -95,13 +95,18 @@ rejects it on a `ticket` route, which could never fire.
 
 There are two, and Sentinel0 only owns one of them.
 
-- **The runner's `gh`.** Every poll, every label, every comment Sentinel0 writes goes
-  through whatever `gh auth login` was run on the runner's machine. This account needs
-  write access to the repositories you watch, or the `sentinel0:in-progress` marker
-  cannot be set and routes will fire twice.
+- **Sentinel0's own token,** stored under **Settings → Integrations** in the
+  dashboard. Every poll, every label and every comment Sentinel0 writes goes through
+  it. A fine-grained PAT with **Issues: read and write** and **Pull requests: read**
+  is enough — Sentinel0 never pushes code. The write half is not optional: without it
+  the `sentinel0:in-progress` marker cannot be set and routes fire on every cycle.
 - **The agent's own `gh`,** inside its Hermes profile. This is who opens the pull
   request and leaves the review. Sentinel0 passes Hermes **no** GitHub token — the
   agent's credentials are Hermes' business entirely.
+
+Sentinel0 stopped shelling out to `gh` in favour of the REST API, so the runner's
+machine needs no GitHub CLI and no `gh auth login`. The agents still use `gh` inside
+their own profiles, which is Hermes' concern rather than Sentinel0's.
 
 `githubLogin` in `~/.sentinel0/config.json` is your *declaration* of which account the
 second one is. Nothing verifies it. Set it wrong and login-targeted routes silently

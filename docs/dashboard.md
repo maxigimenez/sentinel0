@@ -230,6 +230,28 @@ be saved into a state the runner would reject.
 - **No renaming an organization.** Its name is set by `org-cli.js` at creation and
   there is no endpoint to change it.
 
+## The organization rail
+
+Organization pages — Settings, Integrations, Projects, Access keys, Runners — render
+behind a second-level nav between the sidebar and the page. It is the design's
+`showOrgRail`, and it exists because that group had outgrown a flat list: five
+destinations, each a settings surface rather than a view of work, would have buried
+Runs and Routes among them in the primary sidebar.
+
+`components/OrgRail.tsx` owns both the entries and `isOrgPath`, which `AppShell` uses
+to mount it. Each entry carries a hint under its label, because these pages are
+visited rarely enough that "Settings" and "Projects" do not by themselves say which
+one holds the thing you came for.
+
+Adding a page to the group means adding one entry to `ORG_RAIL` and one `<Route>`;
+the rail's visibility follows from the entry rather than from a second list that
+could disagree with it.
+
+The old Settings screen carried the organization, Slack, **and** the runner table.
+Slack moved to Integrations, beside the tracker credentials it belongs with, and the
+runners to a page of their own — it was the only table on a page of forms, and "is
+the Mac Mini still there" is asked far more often than anything else that page held.
+
 ## Design system
 
 The UI is built on [`@16-bits-design/ui`](https://github.com/maxigimenez/16-bits-design),

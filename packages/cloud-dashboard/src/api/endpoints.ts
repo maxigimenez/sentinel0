@@ -2,6 +2,7 @@ import { request } from './client.js'
 import type {
   Agent,
   ApiKey,
+  Integration,
   Project,
   PromptTemplate,
   RouteTemplate,
@@ -121,6 +122,50 @@ export const api = {
 
   revokeKey: (key: string, id: string) =>
     request<{ ok: true }>(key, `/v1/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  integrations: (key: string, signal?: AbortSignal) =>
+    request<{ integrations: Integration[] }>(key, '/v1/integrations', { signal }).then(
+      (r) => r.integrations
+    ),
+
+  saveIntegration: (
+    key: string,
+    provider: string,
+    body: { token: string; projectId?: string | null }
+  ) =>
+    request<{ ok: true; accountLogin: string; scopes: string[] }>(
+      key,
+      `/v1/integrations/${encodeURIComponent(provider)}`,
+      { method: 'PUT', body }
+    ),
+
+  deleteIntegration: (key: string, provider: string, projectId?: string | null) => {
+    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+    return request<{ ok: true }>(key, `/v1/integrations/${encodeURIComponent(provider)}${query}`, {
+      method: 'DELETE',
+    })
+  },
+
+  /*
+   * The repository and label pickers.
+   *
+   * Both go through the cloud rather than straight to GitHub: the browser
+   * holds a `snt_usr_` key, never a GitHub token, so the API asks on its
+   * behalf and returns only names.
+   */
+  gitHubRepositories: (key: string, signal?: AbortSignal) =>
+    request<{ repositories: Array<{ slug: string; private: boolean }> }>(
+      key,
+      '/v1/integrations/github/repositories',
+      { signal }
+    ).then((r) => r.repositories),
+
+  gitHubLabels: (key: string, repo: string, signal?: AbortSignal) =>
+    request<{ labels: string[] }>(
+      key,
+      `/v1/integrations/github/labels?repo=${encodeURIComponent(repo)}`,
+      { signal }
+    ).then((r) => r.labels),
 
   slack: (key: string, signal?: AbortSignal) =>
     request<SlackIntegration>(key, '/v1/integrations/slack', { signal }),

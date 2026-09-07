@@ -7,6 +7,7 @@ import { Spinner } from '@16-bits-design/ui/spinner'
 import { SessionProvider, useSession } from './lib/session.js'
 import { AccessKeys } from './screens/AccessKeys.js'
 import { Agents } from './screens/Agents.js'
+import { Integrations } from './screens/Integrations.js'
 import { KeyNew } from './screens/KeyNew.js'
 import { Login } from './screens/Login.js'
 import { Overview } from './screens/Overview.js'
@@ -17,6 +18,7 @@ import { RouteList } from './screens/RouteList.js'
 import { RouteNew } from './screens/RouteNew.js'
 import { RunDetail } from './screens/RunDetail.js'
 import { RunList } from './screens/RunList.js'
+import { Runners } from './screens/Runners.js'
 import { Settings } from './screens/Settings.js'
 
 function Authenticated(): ReactNode {
@@ -47,6 +49,8 @@ function Authenticated(): ReactNode {
         <Route path="/keys" element={<AccessKeys />} />
         <Route path="/keys/new" element={<KeyNew />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/settings/integrations" element={<Integrations />} />
+        <Route path="/settings/runners" element={<Runners />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

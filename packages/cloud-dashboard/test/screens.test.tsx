@@ -11,6 +11,7 @@ import runFixture from './fixtures/runs_run_1.json'
 import waitingRunFixture from './fixtures/runs_run_2.json'
 import runnersFixture from './fixtures/runners.json'
 import runsFixture from './fixtures/runs_limit_100.json'
+import integrationsFixture from './fixtures/integrations.json'
 import slackFixture from './fixtures/integrations_slack.json'
 
 /**
@@ -34,7 +35,15 @@ const ROUTES: Record<string, unknown> = {
   '/v1/runs/run_2': waitingRunFixture,
   '/v1/runs/run_2/events': eventsFixture,
   '/v1/keys': keysFixture,
+  '/v1/integrations': integrationsFixture,
   '/v1/integrations/slack': slackFixture,
+  '/v1/integrations/github/repositories': {
+    repositories: [
+      { slug: 'acme/platform', private: true },
+      { slug: 'acme/website', private: false },
+    ],
+  },
+  '/v1/integrations/github/labels': { labels: ['bug', 'needs-triage', 'docs'] },
   '/v1/route-templates': { templates: [] },
   '/v1/prompt-templates': { templates: [], variables: ['ticket.ref', 'ticket.url'] },
 }
@@ -238,9 +247,105 @@ describe('other screens', () => {
     expect(screen.queryByRole('button', { name: /revoke key bootstrap user key/i })).toBeNull()
   })
 
-  it('reports Slack as not connected', async () => {
+  it('shows the organization on settings, without the moved sections', async () => {
     await renderAt('/settings')
-    expect(await screen.findByText('not connected')).toBeTruthy()
+    expect(await screen.findByText('Control plane')).toBeTruthy()
+    // Slack and the runner table both moved out from under this page.
+    expect(screen.queryByText('Slack notifications')).toBeNull()
+    expect(screen.queryByText('Registered runners')).toBeNull()
+  })
+
+  /*
+   * `end` on every entry would leave the rail with nothing lit on a child page
+   * like /projects/new — you are plainly in Projects, and the rail said you
+   * were nowhere. `end` on none of them leaves Settings lit on Integrations.
+   */
+  const railCurrent = async (path: string) => {
+    await renderAt(path)
+    const rail = await screen.findByRole('navigation', { name: 'Organization' })
+    return within(rail)
+      .getAllByRole('link')
+      .filter((link) => link.getAttribute('aria-current') === 'page')
+      .map((link) => link.textContent)
+  }
+
+  it('lights the rail entry a child page belongs to', async () => {
+    const current = await railCurrent('/projects/new')
+    expect(current).toHaveLength(1)
+    expect(current[0]).toContain('Projects')
+  })
+
+  it('does not light Settings on the pages nested under it', async () => {
+    const current = await railCurrent('/settings/integrations')
+    expect(current).toHaveLength(1)
+    expect(current[0]).toContain('Integrations')
+  })
+
+  it('shows the organization rail only on organization pages', async () => {
+    await renderAt('/settings')
+    expect(await screen.findByRole('navigation', { name: 'Organization' })).toBeTruthy()
+
+    cleanup()
+    await renderAt('/runs')
+    await screen.findByRole('navigation', { name: 'Primary' })
+    expect(screen.queryByRole('navigation', { name: 'Organization' })).toBeNull()
+  })
+
+  it('reports Slack as not connected, on Integrations', async () => {
+    await renderAt('/settings/integrations')
+    // Two providers and Slack share the badge, so the section is what
+    // distinguishes them. The heading renders while the webhook is still
+    // loading, so the badge has to be awaited inside it rather than read
+    // the moment the section appears.
+    const slack = (await screen.findByText('Slack notifications')).closest('section')!
+    expect(await within(slack).findByText('not connected')).toBeTruthy()
+  })
+})
+
+describe('integrations', () => {
+  it('names the account behind the organization credential', async () => {
+    await renderAt('/settings/integrations')
+    expect(await screen.findByText(/sentinel0-bot/)).toBeTruthy()
+    // The prefix is shown; a whole token never is.
+    expect(screen.getByText(/github_pat_1/)).toBeTruthy()
+  })
+
+  it('distinguishes an override from the organization default', async () => {
+    await renderAt('/settings/integrations')
+    expect(await screen.findByText(/Override · acme\/platform/)).toBeTruthy()
+    // Once per provider: GitHub's is connected, Linear's is the empty state.
+    expect(screen.getAllByText(/Organization default/)).toHaveLength(2)
+  })
+
+  /*
+   * A credential that used to work and is failing now is a different situation
+   * from one that was never added. The fixture's override carries a 401, and
+   * both the badge and the reason have to survive to the screen.
+   */
+  it('surfaces a failing credential with its reason', async () => {
+    await renderAt('/settings/integrations')
+    expect(await screen.findByText('failing')).toBeTruthy()
+    expect(screen.getByText(/Bad credentials/)).toBeTruthy()
+  })
+})
+
+describe('adding a project', () => {
+  it('offers repositories from the stored credential instead of a slug field', async () => {
+    await renderAt('/projects/new')
+    // The library's Select is a listbox: its options exist only once open.
+    await userEvent.click(await screen.findByLabelText(/repository/i))
+    const offered = (await screen.findAllByRole('option')).map((option) => option.textContent)
+
+    expect(offered).toContain('acme/platform (private)')
+    expect(offered).toContain('acme/website')
+    // The free-form JSON textarea this replaced is behind a disclosure now.
+    expect(screen.queryByLabelText('Filters')).toBeNull()
+  })
+
+  it('still allows raw JSON filters for a shape the pickers do not cover', async () => {
+    await renderAt('/projects/new')
+    await userEvent.click(await screen.findByRole('button', { name: /edit filters as json/i }))
+    expect(screen.getByLabelText('Filters')).toBeTruthy()
   })
 })
 

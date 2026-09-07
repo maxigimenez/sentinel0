@@ -71,7 +71,9 @@ needs **no local clone** of any repository, and `ProjectConfig` has no `workspac
 - **`packages/cloud-api`** — the Railway-deployed control plane. Fastify + Postgres.
   Stores config, the agent registry, and run history; sends Slack notifications.
 - **`packages/cloud-dashboard`** — the React app over the cloud user API. Vite +
-  React 19, built on `@16-bits-design/ui`. Named as a sibling of `cloud-api` because
+  React 19, built on `@16-bits-design/ui`. Organization pages render behind a
+  **second-level rail** (`components/OrgRail.tsx`, the design's `showOrgRail`),
+  mounted by `AppShell` only on those paths. Named as a sibling of `cloud-api` because
   both are hosted; the runner also serves an API, so an unqualified `api` would be
   ambiguous. Deployed to Railway as its own service; see `docs/dashboard.md`.
 
@@ -100,7 +102,7 @@ harmless where a loss is not.
 
 | File | Purpose |
 |---|---|
-| `config.json` | Cloud credentials, Hermes profiles and keys, secrets (v2 schema) |
+| `config.json` | Cloud credentials, Hermes profiles and keys, fallback tracker secrets (v2 schema) |
 | `routes.json` | Last known good routes; the offline fallback, and the whole route table when no cloud is configured |
 | `running.json` | Pid and port of the running runner |
 | `sentinel0.db` | SQLite — runs, run events, dispatch ledger, observations, mirror outbox |
@@ -150,7 +152,7 @@ Two invariants the dispatcher enforces:
    agent was reached releases the claim so a fix can run.
 
 **Two GitHub identities, and only one of them is Sentinel0's.** The *runner's* own
-`gh` does all the polling, labelling and commenting; each *agent* authenticates as
+**token** does all the polling, labelling and commenting; each *agent* authenticates as
 itself inside its Hermes profile, and Sentinel0 passes it no token — `createRun` sends
 prompt, instructions, session and model, nothing else. `HermesProfileConfig.githubLogin`
 is therefore the operator's *declaration* of which account a profile uses, verified by
@@ -167,6 +169,55 @@ but a manual run against a busy agent is **refused** rather than deferred, becau
 nothing will retry it and the person who pressed the button is owed the reason. The run
 records `routeId: 'manual'` and `triggerType: 'manual'`; inventing a plausible route id
 would be worse than saying there was not one.
+
+### Tracker credentials (`packages/common/src/github.ts`, `orchestrator/src/integrations/`)
+
+Sentinel0 **does not shell out to `gh`**. It did, and the machine it runs on stopped
+being able to install it; the six calls it actually made are plain REST, so
+`GitHubRestClient` makes them over `fetch`. It lives in `common` rather than the
+orchestrator because the cloud API needs the same three calls to answer the
+dashboard's repository and label pickers, and two clients would be two places that
+know GitHub's field names.
+
+The token arrives through a **provider function**, never a constructor string. A PAT
+is a constant and would not need one; a GitHub App installation token expires roughly
+hourly, and the provider is the shape that serves both — moving to an App changes how
+a token is obtained and nothing else in the file.
+
+Two REST behaviours that are not `gh` behaviours, and both would fail silently:
+
+- `GET /repos/{o}/{r}/issues` **includes pull requests**; `gh issue list` did not.
+  Unfiltered, every open PR also raises a `ticket` trigger.
+- `gh`'s `reviewRequests` merged users and teams; REST splits them into
+  `requested_reviewers` and `requested_teams`. Reading only the first makes a route
+  targeting a review-owning team silently never match.
+
+`getPullRequestDiff` is **gone**, not ported. It had no callers after the Hermes
+pivot: fetching a diff is the agent's job under the boundary, and re-adding it here
+would cross that boundary in the wrong direction. What Sentinel0 still needs from
+GitHub is five calls — list issues, list pulls, ensure/add/remove labels, and post a
+comment. Labels are the non-negotiable half: `sentinel0:in-progress` is the loop
+guard, and a runner that cannot write labels re-fires every route on every cycle.
+The comment exists for `postFailure`, the one case an agent structurally cannot
+report on its own behalf.
+
+**Credentials are cloud-owned, and the runner still calls GitHub itself.** The cloud
+is a *credential broker*, not a data proxy: `GET /v1/runner/integrations` hands the
+runner its tokens, and the runner polls `api.github.com` directly. Proxying the data
+too would have made trigger collection stop whenever Railway did, which is precisely
+what `routes.json`'s offline cache exists to prevent.
+
+`IntegrationStore` holds them **in memory only**. Routes and projects cache to
+`~/.sentinel0/` so an outage cannot stop dispatch, and the same argument applies here
+— but a decrypted PAT in a file is a worse trade than a runner that needs its control
+plane once at boot. An operator who wants to survive a restart mid-outage sets
+`GITHUB_TOKEN` (or `LINEAR_API_KEY`), which is the fallback, not an override: the
+cloud wins whenever it has an answer, or a rotated credential would lose to a stale
+local one. A failed refresh keeps what was already loaded, for the same reason.
+
+Precedence is **project override, then organization default**, resolved by
+`resolveIntegration` in `common` so the cloud and the dashboard cannot disagree
+about it.
 
 ### Route catalog (`packages/common/src/route-catalog.ts`)
 
@@ -209,6 +260,19 @@ CORS on the user API must list its methods explicitly. `@fastify/cors` defaults 
 curl, sending no preflight, works perfectly.
 
 Migrations are plain `.sql` files applied in filename order, one transaction each.
+
+`SENTINEL0_SECRET_KEY` is **required** once any integration is stored: 32 random
+bytes, base64 or hex, encrypting tracker credentials with AES-256-GCM. `crypto.ts`
+throws rather than deriving a key from nothing, because a deployment that quietly
+encrypted every token under a guessable constant would look exactly like a working
+one. `GET /v1/runner/integrations` is the only endpoint that returns a plaintext
+secret, and is runner-scoped for precisely that reason — the `snt_usr_` key a browser
+holds is rejected before the handler runs.
+
+`/v1/integrations/slack` stays a static route and so still wins over the parametric
+`/v1/integrations/:provider`. Slack is deliberately not in the `integrations` table:
+it authenticates nothing and is never handed to a runner, so folding it in would have
+meant a column that is null for one provider and required for the others.
 
 `DASHBOARD_URL` is optional and only used to deep-link a run from Slack. Without it the
 needs-approval message still names the `sentinel0 approve` command — a notification that

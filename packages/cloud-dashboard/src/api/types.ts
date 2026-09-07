@@ -143,6 +143,26 @@ export interface ApiKey {
   revoked_at: string | null
 }
 
+/**
+ * A tracker credential, as the API is willing to describe it.
+ *
+ * There is no token field and never will be: the API returns a prefix so a
+ * person can tell which credential is installed, and nothing that could be
+ * used to act as them.
+ */
+export interface Integration {
+  provider: 'github' | 'linear'
+  /** Null for the organization default; a project id for an override. */
+  projectId: string | null
+  tokenPrefix: string
+  accountLogin: string | null
+  scopes: string[]
+  createdAt: string
+  updatedAt: string
+  lastVerifiedAt: string | null
+  lastError: string | null
+}
+
 export interface SlackIntegration {
   configured: boolean
   enabled?: boolean

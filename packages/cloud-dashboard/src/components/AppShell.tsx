@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
-import { Outlet } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { api } from '../api/endpoints.js'
 import { useResource } from '../lib/useResource.js'
+import { isOrgPath, OrgRail } from './OrgRail.js'
 import { Sidebar } from './Sidebar.js'
 
 /**
@@ -13,6 +14,7 @@ import { Sidebar } from './Sidebar.js'
  * still there" is the one fact that goes stale while you watch it.
  */
 export function AppShell(): ReactNode {
+  const { pathname } = useLocation()
   const runners = useResource((key, signal) => api.runners(key, signal), [], { pollMs: 30_000 })
   // Polled, not loaded once: the counts sit beside a screen that can create and
   // delete the very things being counted, and a nav that disagrees with the
@@ -26,6 +28,13 @@ export function AppShell(): ReactNode {
         runners={runners.data}
         counts={{ Routes: routes.data?.length, Agents: agents.data?.length }}
       />
+      {/*
+       * Mounted only on organization pages, matching the design's
+       * `showOrgRail`. Rendering it always would put a column of settings
+       * links beside the run list, which is the surface it was added to keep
+       * uncluttered.
+       */}
+      {isOrgPath(pathname) ? <OrgRail /> : null}
       <main className="px-main">
         <Outlet />
       </main>

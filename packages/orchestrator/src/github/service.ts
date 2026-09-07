@@ -6,8 +6,8 @@ import {
   type ProjectConfig,
   type TriggerEvent,
 } from '@sentinel0/common'
-import type { LocalExecutor } from '@sentinel0/common/executor'
 import type { TrackerWriter, TriggerSource } from '../triggers/types.js'
+import type { GitHubPullRequest, GitHubRestClient } from '@sentinel0/common/github'
 
 export function requireRepo(project: ProjectConfig): { owner: string; repo: string } {
   if (project.provider !== TICKET_PROVIDER.GITHUB) {
@@ -28,43 +28,13 @@ export function parseIssueNumber(ref: string): number {
   return Number.parseInt(match[1], 10)
 }
 
-interface IssueSummary {
-  number: number
-  title: string
-  body?: string | null
-  url?: string
-  state?: string
-  updatedAt?: string
-  labels?: Array<{ name: string }>
-  assignees?: Array<{ login?: string }>
-}
-
-interface PullRequestSummary extends IssueSummary {
-  reviewRequests?: Array<{ login?: string; name?: string; slug?: string }>
-  assignees?: Array<{ login?: string }>
-  isDraft?: boolean
-  baseRefName?: string
-}
-
 /** Orange, matching Sentinel0's own colour, so managed labels read as a set. */
 const SENTINEL0_LABEL_COLOR = 'f97316'
 
 export class GitHubService implements TriggerSource, TrackerWriter {
   readonly name = 'github'
 
-  constructor(private readonly executor: LocalExecutor) {}
-
-  private async gh(args: string[]): Promise<string> {
-    const result = await this.executor.executeCommand(['gh', ...args], { cwd: process.cwd() })
-
-    if (result.exitCode === 127) {
-      throw new Error('GitHub CLI not found. Install it and run "gh auth login".')
-    }
-    if (result.exitCode !== 0) {
-      throw new Error(`gh ${args[0]} ${args[1] ?? ''} failed: ${result.output.trim()}`)
-    }
-    return result.output
-  }
+  constructor(private readonly api: GitHubRestClient) {}
 
   // ── Trigger source ─────────────────────────────────────────
 
@@ -83,38 +53,20 @@ export class GitHubService implements TriggerSource, TrackerWriter {
     const { owner, repo } = requireRepo(project)
     const { state = 'open', labels } = project.filters
 
-    const args = [
-      'issue',
-      'list',
-      '--repo',
-      `${owner}/${repo}`,
-      '--json',
-      'number,title,body,url,state,updatedAt,labels,assignees',
-      '--limit',
-      '100',
-      '--state',
-      state,
-    ]
-    // gh ANDs repeated --label, which is the narrowing behaviour we want here:
-    // this filter is a coarse pre-filter, and routes do the real matching.
-    for (const label of labels ?? []) {
-      args.push('--label', label)
-    }
-
-    const issues = JSON.parse((await this.gh(args)) || '[]') as IssueSummary[]
+    const issues = await this.api.issues(owner, repo, { state, labels })
 
     return issues.map((issue) => ({
       type: TRIGGER_TYPE.TICKET,
       projectId: project.id,
       provider: TICKET_PROVIDER.GITHUB,
       ref: `${owner}/${repo}#${issue.number}`,
-      // updatedAt is GitHub's own "has this changed" signal, which makes it the
-      // natural revision: relabel or edit a ticket and the route fires again;
-      // leave it alone and every later poll is a no-op.
-      revision: issue.updatedAt ?? '',
+      // updated_at is GitHub's own "has this changed" signal, which makes it
+      // the natural revision: relabel or edit a ticket and the route fires
+      // again; leave it alone and every later poll is a no-op.
+      revision: issue.updated_at ?? '',
       title: issue.title,
       body: issue.body ?? '',
-      url: issue.url,
+      url: issue.html_url,
       state: issue.state,
       labels: issue.labels?.map((label) => label.name) ?? [],
       assignees: logins(issue.assignees),
@@ -131,21 +83,7 @@ export class GitHubService implements TriggerSource, TrackerWriter {
    */
   private async collectPullRequests(project: ProjectConfig): Promise<TriggerEvent[]> {
     const { owner, repo } = requireRepo(project)
-
-    const pulls = JSON.parse(
-      (await this.gh([
-        'pr',
-        'list',
-        '--repo',
-        `${owner}/${repo}`,
-        '--json',
-        'number,title,body,url,state,updatedAt,labels,assignees,reviewRequests,isDraft,baseRefName',
-        '--limit',
-        '100',
-        '--state',
-        'open',
-      ])) || '[]'
-    ) as PullRequestSummary[]
+    const pulls = await this.api.pullRequests(owner, repo)
 
     const events: TriggerEvent[] = []
 
@@ -157,23 +95,23 @@ export class GitHubService implements TriggerSource, TrackerWriter {
         ref: `${owner}/${repo}#${pull.number}`,
         title: pull.title,
         body: pull.body ?? '',
-        url: pull.url,
+        url: pull.html_url,
         state: pull.state,
         labels: pull.labels?.map((label) => label.name) ?? [],
         assignees: logins(pull.assignees),
         prNumber: pull.number,
         requestedReviewers: reviewers,
-        isDraft: pull.isDraft,
-        baseBranch: pull.baseRefName,
+        isDraft: pull.draft,
+        baseBranch: pull.base?.ref,
       }
 
       events.push({
         ...base,
         type: TRIGGER_TYPE.PR_EVENT,
-        // Assignee and reviewer sets are not reliably reflected in updatedAt,
+        // Assignee and reviewer sets are not reliably reflected in updated_at,
         // so they are folded in: adding someone must count as a change.
         revision: [
-          pull.updatedAt ?? '',
+          pull.updated_at ?? '',
           base.assignees.slice().sort().join(','),
           reviewers.slice().sort().join(','),
           base.labels.slice().sort().join(','),
@@ -184,7 +122,7 @@ export class GitHubService implements TriggerSource, TrackerWriter {
         events.push({
           ...base,
           type: TRIGGER_TYPE.PR_REVIEW_REQUESTED,
-          revision: `${pull.updatedAt ?? ''}|${reviewers.slice().sort().join(',')}`,
+          revision: `${pull.updated_at ?? ''}|${reviewers.slice().sort().join(',')}`,
         })
       }
     }
@@ -192,58 +130,13 @@ export class GitHubService implements TriggerSource, TrackerWriter {
     return events
   }
 
-  /** Fetches a PR's diff, for feeding a reviewer agent that needs the change itself. */
-  async getPullRequestDiff(project: ProjectConfig, prNumber: number): Promise<string> {
-    const { owner, repo } = requireRepo(project)
-    return this.gh(['pr', 'diff', String(prNumber), '--repo', `${owner}/${repo}`])
-  }
-
   // ── Tracker writer ─────────────────────────────────────────
 
   async postComment(_target: CommentTarget, event: TriggerEvent, body: string): Promise<void> {
     const { owner, repo } = splitRef(event.ref)
-    const number = parseIssueNumber(event.ref)
-
     // Issues and PRs share the issues comment endpoint on GitHub, so both
     // comment targets resolve to the same call.
-    await this.gh([
-      'api',
-      `repos/${owner}/${repo}/issues/${number}/comments`,
-      '-X',
-      'POST',
-      '-F',
-      `body=${body}`,
-    ])
-  }
-
-  /**
-   * Creates a label if the repository does not have it.
-   *
-   * `gh issue edit --add-label` fails outright on an unknown label, so the
-   * `sentinel0:` markers would never apply to a repository that has not seen
-   * them before -- and the loop guard that depends on them would quietly not
-   * work. Already-exists is the expected case and is not an error.
-   */
-  private async ensureLabel(owner: string, repo: string, label: string): Promise<void> {
-    const result = await this.executor.executeCommand(
-      [
-        'gh',
-        'label',
-        'create',
-        label,
-        '--repo',
-        `${owner}/${repo}`,
-        '--color',
-        SENTINEL0_LABEL_COLOR,
-        '--description',
-        'Managed by Sentinel0',
-      ],
-      { cwd: process.cwd() }
-    )
-
-    if (result.exitCode !== 0 && !/already exists/i.test(result.output)) {
-      throw new Error(`Could not create label "${label}": ${result.output.trim()}`)
-    }
+    await this.api.createComment(owner, repo, parseIssueNumber(event.ref), body)
   }
 
   async updateLabels(
@@ -260,26 +153,32 @@ export class GitHubService implements TriggerSource, TrackerWriter {
     }
 
     for (const label of toAdd) {
-      await this.ensureLabel(owner, repo, label)
+      await this.api.ensureLabel(owner, repo, label, SENTINEL0_LABEL_COLOR, 'Managed by Sentinel0')
     }
+    await this.api.addLabels(owner, repo, number, toAdd)
 
-    const args = ['issue', 'edit', String(number), '--repo', `${owner}/${repo}`]
-    for (const label of toAdd) {
-      args.push('--add-label', label)
-    }
+    // One call per label: GitHub's removal endpoint addresses a single name in
+    // the path, and there is no batch form.
     for (const label of toRemove) {
-      args.push('--remove-label', label)
+      await this.api.removeLabel(owner, repo, number, label)
     }
-    await this.gh(args)
   }
 }
 
 export const COMMENT_TARGETS_HANDLED: CommentTarget[] = [COMMENT_TARGET.TICKET, COMMENT_TARGET.PR]
 
-function reviewerLogins(pull: PullRequestSummary): string[] {
-  return (pull.reviewRequests ?? [])
-    .map((request) => request.login ?? request.slug ?? request.name)
-    .filter((login): login is string => Boolean(login))
+/**
+ * Everyone whose review is outstanding, users and teams alike.
+ *
+ * `gh` reported both in one `reviewRequests` array; the REST API splits them,
+ * and dropping the teams half would make a route targeting a review-owning
+ * team silently never match.
+ */
+function reviewerLogins(pull: GitHubPullRequest): string[] {
+  return [
+    ...(pull.requested_reviewers ?? []).map((user) => user.login),
+    ...(pull.requested_teams ?? []).map((team) => team.slug),
+  ].filter((login): login is string => Boolean(login))
 }
 
 function logins(users?: Array<{ login?: string }>): string[] {
