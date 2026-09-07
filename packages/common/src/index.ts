@@ -155,6 +155,15 @@ export interface TriggerEvent {
   provider: TicketProvider
   ref: string
   revision: string
+  /**
+   * When the item came into existence, as the provider reports it.
+   *
+   * Not used for matching. It exists to tell an item that was created while
+   * this runner was watching from one that merely predates its first look --
+   * the difference between "the reviewer was just added" and "the reviewer was
+   * already there when I arrived", which first sight alone cannot express.
+   */
+  createdAt?: string
   title: string
   body: string
   url?: string

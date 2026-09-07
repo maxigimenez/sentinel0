@@ -37,6 +37,7 @@ export interface GitHubIssue {
   body: string | null
   html_url: string
   state: string
+  created_at: string
   updated_at: string
   labels: GitHubLabel[]
   assignees: GitHubUser[]
@@ -58,6 +59,7 @@ export interface GitHubPullRequest {
   body: string | null
   html_url: string
   state: string
+  created_at: string
   updated_at: string
   draft: boolean
   labels: GitHubLabel[]

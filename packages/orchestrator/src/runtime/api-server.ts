@@ -15,6 +15,7 @@ import type { Sentinel0Database } from '../database.js'
 import { readRunnerErrors } from './diagnostics.js'
 import { isAllowedBrowserOrigin } from './network-access.js'
 import { explainRule } from '../routing/rule-engine.js'
+import { changesForNewItem, isBornSinceWatermark } from '../triggers/history.js'
 
 export interface ApiServerDeps {
   getConfig: () => AppConfig
@@ -54,11 +55,18 @@ function explainRouting(
   routes: readonly RoutingRule[]
 ) {
   return events.map((event) => {
-    const changes = deps.db.changesSince(event.projectId, event.ref, {
+    const stored = deps.db.changesSince(event.projectId, event.ref, {
       labels: event.labels,
       assignees: event.assignees ?? [],
       reviewers: event.requestedReviewers ?? [],
     })
+    // Same rule the poll loop applies, and for the same reason: an item created
+    // since the last cycle reads as wholly new rather than as no history.
+    const changes =
+      stored ??
+      (isBornSinceWatermark(event.createdAt, deps.db.watermarkFor(event.projectId))
+        ? changesForNewItem(event)
+        : undefined)
     const observed = { ...event, changes }
 
     const verdicts = routes.map((route) => {
