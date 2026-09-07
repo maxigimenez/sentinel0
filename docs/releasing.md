@@ -215,7 +215,7 @@ To test a tarball without publishing:
 
 ```bash
 mkdir /tmp/t && cd /tmp/t && npm init -y
-npm install /path/to/sentinel0-0.0.3.tgz
+npm install /path/to/sentinel0-0.0.4.tgz
 ./node_modules/.bin/sentinel0 --version
 ```
 
@@ -240,19 +240,52 @@ package it bundles**, at the same version. Three things enforce it:
 - `prepare-package.mjs` refuses to pack if they disagree.
 - `publish-cli.yml` installs the packed tarball into a clean directory and runs
   [`verify-bundled-imports.mjs`](../.github/scripts/verify-bundled-imports.mjs), which
-  checks that every package the bundled code imports is actually there.
+  checks that every package *and subpath* the bundled code imports is reachable.
 
 That last one is the only check that sees the tarball the way a user does. It exists
 because `parallax-cli` 0.2.0 — this package under its former name — shipped broken
 past a pack-install-and-run test: `--version` and `preflight` never reach the
 orchestrator's entry point, so the import that fails is never evaluated.
 
+### The second half: a bundled manifest is derived, never written
+
+The minimal manifest also carries `exports`, and that half has its own failure:
+
+> **A bundled package's `exports` is the only one Node consults.** Inside the tarball
+> there is no pnpm symlink back to `packages/common`, so a subpath missing from the
+> written manifest is unreachable however well it resolves in the workspace.
+
+0.0.3 shipped that way. `prepare-package.mjs` hand-wrote `@sentinel0/common`'s exports
+as a literal listing `.` and `./executor`; the package had grown `./github`,
+`./prompt-catalog`, `./route-catalog` and `./route-validation`. `sentinel0 start` died
+on its first import with `ERR_PACKAGE_PATH_NOT_EXPORTED`, and nothing caught it —
+every test resolves through the symlink, and `verify-bundled-imports.mjs` collapsed
+`@sentinel0/common/github` to `@sentinel0/common`, which was right there.
+
+So the manifest is now **derived from the workspace manifest**
+(`bundledManifest()` keeps `name`, `version`, `type`, `main`, `types`, `exports`,
+`bin` and drops the rest), which makes the drift unrepresentable. Three checks stand
+behind it, and each covers something the others cannot see:
+
+- `packages/cli/test/bundled-manifest.test.ts` asserts the derivation carries `exports`
+  verbatim, drops `dependencies`, names only built files, and — the one that reads the
+  code rather than the manifests — that every `@sentinel0/common/<subpath>` imported
+  anywhere in `packages/*/src` is declared.
+- `prepare-package.mjs` refuses to pack a manifest naming a file the build did not emit.
+- `verify-bundled-imports.mjs` checks subpaths against the installed `exports` map.
+
+**Adding a subpath to `@sentinel0/common` therefore means editing exactly one file:**
+`packages/common/package.json`. Nothing in the CLI needs to learn about it.
+
 ### Adding another internal package
 
 1. `dependencies` and `bundleDependencies` in `packages/cli/package.json`
-2. `bundledPackages` in `packages/cli/scripts/prepare-package.mjs`
-3. the tarball assertion in `publish-cli.yml`
-4. its third-party `dependencies`, copied into the CLI's own
+2. `bundledPackages` in `packages/cli/scripts/prepare-package.mjs` — name and
+   `sourceDir` only; its manifest is derived from its own `package.json`
+3. `BUNDLED` in `packages/cli/test/bundled-manifest.test.ts` and
+   `bundled-dependencies.test.ts`
+4. the tarball assertion in `publish-cli.yml`
+5. its third-party `dependencies`, copied into the CLI's own
 
 ---
 

@@ -61,7 +61,7 @@ GET /health
 Unauthenticated, because Railway's health check runs before any key exists.
 
 ```json
-{ "status": "ok", "version": "0.0.3" }
+{ "status": "ok", "version": "0.0.4" }
 ```
 
 ---
@@ -507,7 +507,7 @@ API; the source of truth is Hermes itself.
 {
   "name": "cerebro",
   "hostname": "cerebro.local",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "started_at": "2026-09-01T20:00:00.000Z",
   "last_seen_at": "2026-09-02T08:14:31.000Z",
   "hermes_ok": true,
