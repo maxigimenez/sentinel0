@@ -62,11 +62,16 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        run: pnpm test
-
+      # Build first, as ci.yml does. Two suites only mean something against
+      # build output — `common`'s circular-import guard imports the compiled
+      # package, and the CLI's bundled-manifest test used to read `dist/` —
+      # and both go quiet or fail when the build has not run yet. Testing
+      # first made the 0.0.4 publish fail after lint had already passed.
       - name: Build
         run: pnpm build
+
+      - name: Test
+        run: pnpm test
 
       - name: Check the published entry point is executable
         run: |
