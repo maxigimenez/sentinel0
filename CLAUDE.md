@@ -139,7 +139,24 @@ by hand.
 
 `trigger → match → target → execution → outcome`. `rule-engine.ts` is pure — no I/O,
 no clock — so the whole "which agent starts, and when" decision is exhaustively
-unit-testable.
+unit-testable. `matchesRule` is *defined as* `explainRule(...) === undefined` rather
+than written beside it: a route that silently does nothing is this system's hardest
+failure, the cycle summary's `no-route` is equally consistent with a typo'd login and a
+transition that was never recorded, and two implementations would drift. `sentinel0
+explain` (`GET /routes/explain`) re-collects live triggers and reports the one clause
+that rejected each, reading history via `changesSince` and never `observe` — a
+diagnostic that advanced the baseline would consume the transition being asked about.
+
+**Transition history belongs to the item, not to the trigger type.** One pull request
+raises a `pr_event` and, while a review is outstanding, a `pr_review_requested`;
+observations are keyed on `ref` alone and the poll loop observes once per item per
+cycle. Keying per type gave the narrower event a baseline that began at the instant of
+the transition it existed to detect — first sight reports no changes, and by the next
+cycle the reviewer is no longer new — so `pr_review_requested` + `reviewersAdded` could
+never fire, the shipped reviewer-agent template included. `pr_event` is emitted for
+every open PR regardless, which is what makes its baseline the right one to share.
+`migrateObservationKeys` promotes existing `<type>:<ref>` rows so an upgrade does not
+reseed a history the install already had.
 
 Two invariants the dispatcher enforces:
 

@@ -23,6 +23,7 @@ export type StartCommandOptions = {
 
 export type LogsCommandOptions = { runId?: string; follow: boolean }
 export type RunsCommandOptions = { status?: string; limit: number }
+export type ExplainCommandOptions = { projectId?: string; ref?: string }
 export type RunCommandOptions = { agent: string; prompt: string; timeoutSeconds: number }
 export type CancelCommandOptions = { runId: string }
 export type ApproveCommandOptions = { runId: string; choice: ApprovalChoice }

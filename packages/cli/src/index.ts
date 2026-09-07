@@ -12,6 +12,7 @@ import {
   parseLogsOptions,
   parseRunOptions,
   parseRunnerOptions,
+  parseExplainOptions,
   parseRunsOptions,
   parseStartOptions,
   resolvePath,
@@ -37,6 +38,7 @@ import { runRestart } from './commands/restart.js'
 import { runRoutes } from './commands/routes.js'
 import { runRunner } from './commands/runner.js'
 import { runRuns } from './commands/runs.js'
+import { runExplain } from './commands/explain.js'
 import { runSmokeTest } from './commands/run.js'
 import { runStart } from './commands/start.js'
 import { runStatus } from './commands/status.js'
@@ -160,6 +162,8 @@ async function dispatch(command: string | undefined, args: string[]): Promise<vo
       return runRoutes(context)
     case 'runs':
       return runRuns(context, parseRunsOptions(args))
+    case 'explain':
+      return runExplain(context, parseExplainOptions(args))
     case 'logs':
       return runLogs(context, parseLogsOptions(args))
     case 'cancel':

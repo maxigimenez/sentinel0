@@ -12,6 +12,7 @@ import {
   type RoutingRule,
   type RunRecord,
   type RunStatus,
+  type TriggerChanges,
   type TriggerEvent,
 } from '@sentinel0/common'
 import { loadConfig, resolveDataDir } from './config-loader.js'
@@ -560,6 +561,15 @@ async function main(): Promise<void> {
     approveRun,
     db,
     dataDir,
+    collectTriggers: async (projectId) => {
+      const projects = projectId
+        ? runtime.projects.filter((project) => project.id === projectId)
+        : runtime.projects
+      const collected = await Promise.all(
+        projects.map((project) => triggerSourceFor(project, services).collect(project))
+      )
+      return collected.flat()
+    },
   })
 
   await fastify.listen({
@@ -805,15 +815,32 @@ async function main(): Promise<void> {
         tally.collected += events.length
         tally.perProject.push(`${project.id} ${events.length}`)
 
+        // Record what each item looks like now and attach what changed, so
+        // routes can match "label added" rather than merely "label present".
+        //
+        // Observed once per *item*, not per event. One pull request raises both
+        // a pr_event and -- when a reviewer is outstanding -- a
+        // pr_review_requested, and keying the baseline by trigger type gave the
+        // second one a history that began at the very moment of the transition
+        // it existed to detect. First sight reports nothing changed, and by the
+        // next cycle the reviewer is no longer new, so a `reviewersAdded` route
+        // on pr_review_requested could never fire once -- including the
+        // reviewer-agent route this ships in the catalog. pr_event is emitted
+        // for every open pull request, so sharing its baseline is what gives
+        // the narrower event real history.
+        const observed = new Map<string, TriggerChanges | undefined>()
         for (const event of events) {
-          // Record what this item looks like now and attach what changed, so
-          // routes can match "label added" rather than merely "label present".
-          const changes = db.observe(event.projectId, `${event.type}:${event.ref}`, {
-            labels: event.labels,
-            assignees: event.assignees ?? [],
-            reviewers: event.requestedReviewers ?? [],
-          })
-          void runDispatch(project, { ...event, changes }, tally)
+          if (!observed.has(event.ref)) {
+            observed.set(
+              event.ref,
+              db.observe(event.projectId, event.ref, {
+                labels: event.labels,
+                assignees: event.assignees ?? [],
+                reviewers: event.requestedReviewers ?? [],
+              })
+            )
+          }
+          void runDispatch(project, { ...event, changes: observed.get(event.ref) }, tally)
         }
       }
 
