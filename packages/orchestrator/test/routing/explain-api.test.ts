@@ -105,6 +105,25 @@ describe('GET /routes/explain', () => {
     await app.close()
   })
 
+  it('reports a newly created pull request as matching, without recording it', async () => {
+    const db = openDatabase('memory')
+    // The project has been watched since noon; this pull request is newer, so
+    // its reviewer really was added since the last look.
+    db.advanceWatermark('trackside', '2026-09-07T12:00:00Z')
+
+    const born = { ...reviewRequested(['EomiAIBot']), createdAt: '2026-09-07T13:19:18Z' }
+    const app = await server(db, [born])
+
+    const first = await app.inject({ method: 'GET', url: '/routes/explain' })
+    const second = await app.inject({ method: 'GET', url: '/routes/explain' })
+
+    expect(first.json().items[0].verdicts[0].matched).toBe(true)
+    expect(second.json().items[0].verdicts[0].matched).toBe(true)
+    // Explaining must not move the watermark either.
+    expect(db.watermarkFor('trackside')).toBe('2026-09-07T12:00:00Z')
+    await app.close()
+  })
+
   it('rejects a project this runner does not poll', async () => {
     const app = await server(openDatabase('memory'), [])
     const response = await app.inject({ method: 'GET', url: '/routes/explain?project=nope' })

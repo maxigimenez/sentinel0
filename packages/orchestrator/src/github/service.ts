@@ -64,6 +64,7 @@ export class GitHubService implements TriggerSource, TrackerWriter {
       // the natural revision: relabel or edit a ticket and the route fires
       // again; leave it alone and every later poll is a no-op.
       revision: issue.updated_at ?? '',
+      createdAt: issue.created_at,
       title: issue.title,
       body: issue.body ?? '',
       url: issue.html_url,
@@ -93,6 +94,7 @@ export class GitHubService implements TriggerSource, TrackerWriter {
         projectId: project.id,
         provider: TICKET_PROVIDER.GITHUB,
         ref: `${owner}/${repo}#${pull.number}`,
+        createdAt: pull.created_at,
         title: pull.title,
         body: pull.body ?? '',
         url: pull.html_url,

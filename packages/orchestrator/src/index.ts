@@ -12,7 +12,6 @@ import {
   type RoutingRule,
   type RunRecord,
   type RunStatus,
-  type TriggerChanges,
   type TriggerEvent,
 } from '@sentinel0/common'
 import { loadConfig, resolveDataDir } from './config-loader.js'
@@ -38,6 +37,7 @@ import {
   saveCachedRoutes,
 } from './cloud/config-cache.js'
 import { buildProviderServices, trackerWriterFor, triggerSourceFor } from './runtime/services.js'
+import { observeCycle } from './triggers/history.js'
 import { createApiServer } from './runtime/api-server.js'
 import { validateRuntimeRequirements } from './runtime/preflight.js'
 import { errorMessage } from './runtime/errors.js'
@@ -815,32 +815,8 @@ async function main(): Promise<void> {
         tally.collected += events.length
         tally.perProject.push(`${project.id} ${events.length}`)
 
-        // Record what each item looks like now and attach what changed, so
-        // routes can match "label added" rather than merely "label present".
-        //
-        // Observed once per *item*, not per event. One pull request raises both
-        // a pr_event and -- when a reviewer is outstanding -- a
-        // pr_review_requested, and keying the baseline by trigger type gave the
-        // second one a history that began at the very moment of the transition
-        // it existed to detect. First sight reports nothing changed, and by the
-        // next cycle the reviewer is no longer new, so a `reviewersAdded` route
-        // on pr_review_requested could never fire once -- including the
-        // reviewer-agent route this ships in the catalog. pr_event is emitted
-        // for every open pull request, so sharing its baseline is what gives
-        // the narrower event real history.
-        const observed = new Map<string, TriggerChanges | undefined>()
-        for (const event of events) {
-          if (!observed.has(event.ref)) {
-            observed.set(
-              event.ref,
-              db.observe(event.projectId, event.ref, {
-                labels: event.labels,
-                assignees: event.assignees ?? [],
-                reviewers: event.requestedReviewers ?? [],
-              })
-            )
-          }
-          void runDispatch(project, { ...event, changes: observed.get(event.ref) }, tally)
+        for (const event of observeCycle(db, project.id, events)) {
+          void runDispatch(project, event, tally)
         }
       }
 

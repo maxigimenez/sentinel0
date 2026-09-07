@@ -158,6 +158,23 @@ every open PR regardless, which is what makes its baseline the right one to shar
 `migrateObservationKeys` promotes existing `<type>:<ref>` rows so an upgrade does not
 reseed a history the install already had.
 
+**First sight and non-existence are different facts** (`triggers/history.ts`). Staying
+quiet on first sight is right for backlog and wrong for an item that was *created* since
+the last poll, where everything on it really was just added. A bot that opens a pull
+request and requests a review three seconds later is never observed without that
+reviewer, so the only cycle that could catch the request is the one that suppresses it —
+which left the reviewer route dead even after the keying fix. `project_watch` holds a
+per-project watermark, the newest creation timestamp seen, in the *provider's* clock on
+both sides: comparing GitHub's timestamps against this machine's would make a runner
+with a slow clock replay its backlog. It is read once per cycle and advanced after, so
+two items opened between the same pair of polls cannot silence each other by ordering,
+and it is monotonic because a reopened item can arrive with an older timestamp.
+
+`observeCycle` is the single implementation of that per-cycle step, called by the poll
+loop and driven directly by the tests. Both bugs above shipped past a green suite whose
+helpers re-implemented the loop — the unit tests handed `changes` to the rule engine and
+so could not see that the real pipeline never produced it.
+
 Two invariants the dispatcher enforces:
 
 1. **One run per agent.** Hermes corrupts a profile's memory if two agents drive it

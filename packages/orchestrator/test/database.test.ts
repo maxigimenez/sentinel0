@@ -188,3 +188,35 @@ describe('dispatch ledger', () => {
     expect(db.hasDispatched('recent')).toBe(true)
   })
 })
+
+describe('project watermark', () => {
+  it('is undefined until a project has been watched', () => {
+    expect(db.watermarkFor('trackside')).toBeUndefined()
+  })
+
+  it('moves forward', () => {
+    db.advanceWatermark('trackside', '2026-09-07T12:00:00Z')
+    db.advanceWatermark('trackside', '2026-09-07T13:00:00Z')
+
+    expect(db.watermarkFor('trackside')).toBe('2026-09-07T13:00:00Z')
+  })
+
+  it('never moves back, so a reopened item cannot make the backlog look new', () => {
+    db.advanceWatermark('trackside', '2026-09-07T13:00:00Z')
+    db.advanceWatermark('trackside', '2026-09-07T12:00:00Z')
+
+    expect(db.watermarkFor('trackside')).toBe('2026-09-07T13:00:00Z')
+  })
+
+  it('ignores an absent timestamp rather than clearing what it has', () => {
+    db.advanceWatermark('trackside', '2026-09-07T13:00:00Z')
+    db.advanceWatermark('trackside', undefined)
+
+    expect(db.watermarkFor('trackside')).toBe('2026-09-07T13:00:00Z')
+  })
+
+  it('keeps projects apart', () => {
+    db.advanceWatermark('trackside', '2026-09-07T13:00:00Z')
+    expect(db.watermarkFor('other')).toBeUndefined()
+  })
+})

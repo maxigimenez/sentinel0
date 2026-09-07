@@ -165,6 +165,16 @@ function migrate(db: DatabaseSync): void {
     );
   `)
 
+  // The newest item-creation timestamp seen per project, in the provider's own
+  // clock. What separates "created while we were watching" from "already there
+  // when we arrived" -- see triggers/history.ts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_watch (
+      projectId    TEXT PRIMARY KEY,
+      maxCreatedAt TEXT NOT NULL
+    );
+  `)
+
   /*
    * The write-ahead log for the cloud mirror.
    *
@@ -550,6 +560,35 @@ export class Sentinel0Database {
    */
   migrateObservationKeys(): void {
     migrateObservationKeys(this.db)
+  }
+
+  /** The newest creation timestamp seen for a project, or undefined on its first cycle. */
+  watermarkFor(projectId: string): string | undefined {
+    const row = this.db
+      .prepare('SELECT maxCreatedAt FROM project_watch WHERE projectId = ?')
+      .get(projectId) as { maxCreatedAt: string } | undefined
+    return row?.maxCreatedAt
+  }
+
+  /**
+   * Moves a project's watermark forward, never back.
+   *
+   * Monotonic because a provider can report an item created *before* one
+   * already seen -- a pull request reopened, a filter widened, a page arriving
+   * out of order -- and letting the watermark drop would make every item newer
+   * than it look freshly born.
+   */
+  advanceWatermark(projectId: string, createdAt: string | undefined): void {
+    if (!createdAt) {
+      return
+    }
+    this.db
+      .prepare(
+        `INSERT INTO project_watch (projectId, maxCreatedAt) VALUES (?, ?)
+         ON CONFLICT (projectId) DO UPDATE SET
+           maxCreatedAt = MAX(excluded.maxCreatedAt, project_watch.maxCreatedAt)`
+      )
+      .run(projectId, createdAt)
   }
 
   pruneObservations(olderThan: number): number {

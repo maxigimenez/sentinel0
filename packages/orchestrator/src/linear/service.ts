@@ -18,6 +18,7 @@ interface IssueNode {
   title: string
   description?: string | null
   url?: string
+  createdAt?: string
   updatedAt?: string
   state?: { name?: string }
   labels?: { nodes: Array<{ name: string }> }
@@ -32,6 +33,7 @@ const ISSUES_QUERY = `
         title
         description
         url
+        createdAt
         updatedAt
         state { name }
         labels { nodes { name } }
@@ -110,6 +112,7 @@ export class LinearService implements TriggerSource, TrackerWriter {
       // Linear's updatedAt moves on label and state changes, which is exactly
       // the set of edits that should re-trigger a route.
       revision: issue.updatedAt ?? '',
+      createdAt: issue.createdAt,
       title: issue.title,
       body: issue.description ?? '',
       url: issue.url,

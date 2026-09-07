@@ -83,6 +83,19 @@ reviewer does: were it to keep its own baseline, that baseline would begin at th
 moment of the request, first sight would suppress it, and a `reviewersAdded` route on
 that trigger could never fire at all. It used to work exactly that way.
 
+**An item created since the last poll is an exception**, because it genuinely had
+everything on it added. A bot that opens a pull request and requests a review three
+seconds later is never seen without that reviewer attached, and so was invisible to a
+transition route — as is any PR whose reviewer is filled in on the *Create pull request*
+form, or any ticket filed with its label already on. Sentinel0 keeps a per-project
+watermark: the newest creation timestamp it has seen. Anything newer came into existence
+while the runner was watching and reads as wholly new; anything older is backlog and
+stays quiet.
+
+The watermark is set on a project's **first** cycle, so everything already open when you
+add a project is backlog — including a pull request that is waiting on a review right
+now. Re-request the review to arm it.
+
 `labels` asks *does it have this now*. `labelsAdded` asks *was it just added*. Pick the
 second when the act is the signal.
 
@@ -309,9 +322,11 @@ matched. `unknown-agent` means the route names a profile absent from `sentinel0 
 `sentinel0:done` — remove it to re-arm, or switch to `per-change` with a transition
 clause.
 
-**A transition route never fires.** It needs a prior observation. `sentinel0 explain`
-says `never been observed before` when that is the reason; add and remove the label once
-while the runner is up.
+**A transition route never fires.** It needs a prior observation, unless the item was
+created after the runner started watching the project. `sentinel0 explain` says
+`never been observed before` when that is the reason. For something that was already
+open when you added the project — or that was open before this behaviour shipped — redo
+the act: remove and re-request the review, or remove and re-add the label.
 
 **Everything fired at once when I created a route.** A state clause (`labels`) matches
 everything currently carrying the label. Use `labelsAdded` if you meant the act.
