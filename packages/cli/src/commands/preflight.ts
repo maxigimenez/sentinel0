@@ -1,16 +1,7 @@
-import { spawn } from 'node:child_process'
 import chalk from 'chalk'
 import type { CliContext, VerifyCheck } from '../types.js'
 import { getJson } from '../api.js'
 import { findCapableNode } from '../node-runtime.js'
-
-async function commandSucceeds(cmd: string, args: string[]): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: 'ignore' })
-    child.on('error', () => resolve(false))
-    child.on('close', (code) => resolve(code === 0))
-  })
-}
 
 /**
  * Checks exactly what this runner needs.
@@ -75,29 +66,34 @@ export async function runPreflight(context: CliContext): Promise<void> {
     checks.push({ name: 'Sentinel0 cloud reachable', ok, required: true, detail })
   }
 
-  const ghInstalled = await commandSucceeds('gh', ['--version'])
+  /*
+   * Credentials, not command-line tools.
+   *
+   * This used to check for `gh` and `gh auth status`. Sentinel0 no longer
+   * shells out to the GitHub CLI, and the machine it runs on may not be able
+   * to install it -- which is what prompted the change. What matters now is
+   * whether a token exists, and the authoritative copy of that lives in the
+   * cloud, so a missing local one is only worth reporting as the fallback it
+   * is.
+   */
+  const localGitHub = Boolean(process.env.GITHUB_TOKEN || config.secrets.GITHUB_TOKEN)
   checks.push({
-    name: 'GitHub CLI installed',
-    ok: ghInstalled,
+    name: 'GITHUB_TOKEN (local fallback)',
+    ok: localGitHub,
     required: false,
-    detail: ghInstalled ? '' : 'Needed only for GitHub projects.',
+    detail: localGitHub
+      ? ''
+      : 'Optional. Settings → Integrations in the dashboard is the usual place.',
   })
-  if (ghInstalled) {
-    const authed = await commandSucceeds('gh', ['auth', 'status'])
-    checks.push({
-      name: 'GitHub CLI authenticated',
-      ok: authed,
-      required: false,
-      // Only show the remedy when there is something to remedy.
-      detail: authed ? '' : 'gh auth login',
-    })
-  }
 
+  const localLinear = Boolean(process.env.LINEAR_API_KEY || config.secrets.LINEAR_API_KEY)
   checks.push({
-    name: 'LINEAR_API_KEY',
-    ok: Boolean(process.env.LINEAR_API_KEY || config.secrets.LINEAR_API_KEY),
+    name: 'LINEAR_API_KEY (local fallback)',
+    ok: localLinear,
     required: false,
-    detail: 'Needed only for Linear projects.',
+    detail: localLinear
+      ? ''
+      : 'Optional. Settings → Integrations in the dashboard is the usual place.',
   })
 
   console.log('')

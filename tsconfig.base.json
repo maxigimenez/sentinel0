@@ -11,6 +11,9 @@
       "@sentinel0/common/executor": [
         "packages/common/src/executor.ts"
       ],
+      "@sentinel0/common/github": [
+        "packages/common/src/github.ts"
+      ],
       "@sentinel0/orchestrator": [
         "packages/orchestrator/src/index.ts"
       ],

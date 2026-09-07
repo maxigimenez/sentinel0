@@ -525,10 +525,6 @@ export function isSentinel0Label(label: string): boolean {
 
 export const DEFAULT_ROUTE_GUARD: RouteGuard = { refire: 'once', markers: true }
 
-export * from './prompt-catalog.js'
-export * from './route-catalog.js'
-export * from './route-validation.js'
-
 // ─────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────
@@ -538,3 +534,97 @@ export async function sleep(ms: number): Promise<void> {
     setTimeout(resolve, ms)
   })
 }
+
+// ─────────────────────────────────────────────────────────────
+// Integrations
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * A tracker credential the organization holds centrally.
+ *
+ * Credentials used to be local: `LINEAR_API_KEY` in `~/.sentinel0/config.json`,
+ * and for GitHub nothing at all, because `gh` carried its own login. Neither
+ * survives a machine that cannot install `gh`, and neither lets the dashboard
+ * offer a repository picker -- a browser cannot hold a token that grants
+ * writing to someone's repositories.
+ *
+ * So an integration is stored once in the cloud, encrypted, and handed to
+ * whoever legitimately needs it: the runner, over its authenticated poll, and
+ * the cloud API itself, to answer the dashboard's "which repositories can this
+ * token see" without the token ever reaching the browser.
+ */
+export const INTEGRATION_PROVIDER = {
+  GITHUB: 'github',
+  LINEAR: 'linear',
+} as const
+
+export type IntegrationProvider = (typeof INTEGRATION_PROVIDER)[keyof typeof INTEGRATION_PROVIDER]
+
+export const INTEGRATION_PROVIDERS: IntegrationProvider[] = [
+  INTEGRATION_PROVIDER.GITHUB,
+  INTEGRATION_PROVIDER.LINEAR,
+]
+
+export function isIntegrationProvider(value: unknown): value is IntegrationProvider {
+  return typeof value === 'string' && INTEGRATION_PROVIDERS.includes(value as IntegrationProvider)
+}
+
+/**
+ * What the user API reports about a stored credential.
+ *
+ * Never the token. `tokenPrefix` is the first few characters, which is what
+ * lets a person confirm *which* token is installed without the API handing
+ * back something that grants writing to their repositories -- the same rule
+ * the Slack webhook already follows, applied to a credential that deserves it
+ * more.
+ */
+export interface IntegrationSummary {
+  provider: IntegrationProvider
+  /** Null for the organization default; a project id for an override. */
+  projectId: string | null
+  tokenPrefix: string
+  /** The account the token authenticates as, resolved when it was saved. */
+  accountLogin: string | null
+  scopes: string[]
+  createdAt: string
+  updatedAt: string
+  lastVerifiedAt: string | null
+  /** The last verification failure, or null while the credential works. */
+  lastError: string | null
+}
+
+/**
+ * One resolved credential, as the runner receives it.
+ *
+ * Resolution happens in the cloud rather than the runner: the cloud knows the
+ * full set of projects, and a runner that had to work out precedence itself
+ * would be a second place for the rule to drift.
+ */
+export interface ResolvedIntegration {
+  provider: IntegrationProvider
+  projectId: string | null
+  token: string
+}
+
+/**
+ * Picks the credential that applies to a project.
+ *
+ * A project-level credential wins over the organization's, so one org token
+ * can cover everything and a project only carries its own when it genuinely
+ * needs a different account. Exported rather than inlined because the cloud
+ * resolves it for the runner and the dashboard explains it to a person, and
+ * those two must agree.
+ */
+export function resolveIntegration<T extends { projectId: string | null }>(
+  credentials: T[],
+  projectId: string
+): T | undefined {
+  return (
+    credentials.find((credential) => credential.projectId === projectId) ??
+    credentials.find((credential) => credential.projectId === null)
+  )
+}
+
+export * from './prompt-catalog.js'
+export * from './route-catalog.js'
+export * from './route-validation.js'

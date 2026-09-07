@@ -1204,3 +1204,221 @@ a:focus-visible,
   flex-direction: column;
   gap: var(--bits-space-2);
 }
+
+/* ── Organization rail ──────────────────────────────────────────────── */
+
+/*
+ * The second-level nav, between the sidebar and the page.
+ *
+ * Borders on both edges rather than one: it sits in the gap between two
+ * columns that each have their own ground, and a single rule would read as
+ * belonging to whichever side it touched.
+ *
+ * Its own scroll, like the sidebar and the main column, so a long settings
+ * page cannot push the rail's last entry out of reach.
+ */
+.px-orgrail {
+  width: 190px;
+  flex: none;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  border-left: 2px solid var(--bits-muted);
+  border-right: 2px solid var(--bits-muted);
+  padding: 14px 10px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bits-space-5);
+}
+
+.px-orgrail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.px-orgrail__items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/*
+ * Two lines, unlike `.px-navitem`'s one.
+ *
+ * The primary sidebar names places you already know; this names settings
+ * surfaces visited rarely enough that the label alone does not say which one
+ * holds what you came for.
+ */
+.px-railitem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bits-space-1);
+  padding: 9px 10px;
+  background: transparent;
+  border: 0;
+  border-left: 3px solid transparent;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 0.12s linear,
+    border-color 0.12s linear;
+}
+
+.px-railitem:hover {
+  background: var(--bits-muted);
+}
+
+.px-railitem:focus-visible {
+  outline: none;
+  box-shadow: var(--bits-focus-ring);
+}
+
+.px-railitem[aria-current='page'] {
+  background: var(--bits-muted);
+  border-left-color: var(--bits-primary);
+}
+
+.px-railitem__label {
+  font-size: var(--bits-font-size-small);
+  color: var(--bits-text-dim);
+}
+
+.px-railitem[aria-current='page'] .px-railitem__label {
+  color: var(--bits-text);
+}
+
+.px-railitem__hint {
+  font-size: var(--bits-font-size-label);
+  color: var(--bits-text-muted);
+}
+
+/*
+ * At the shell's own breakpoint the rail stops being a column and becomes a
+ * row above the page: 190px of fixed width beside an already-narrow main
+ * column leaves neither enough room to be read. Same 860px as `.px-shell`,
+ * because that is where the shell turns into a column and a rail still
+ * standing beside it would have nothing to stand beside.
+ *
+ * It wraps rather than scrolling sideways, for the reason the sidebar does:
+ * a horizontal scroller hides destinations behind a gesture with no
+ * affordance, and five is few enough to show at once.
+ */
+@media (max-width: 860px) {
+  .px-orgrail {
+    width: auto;
+    height: auto;
+    flex-direction: row;
+    overflow: visible;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 2px solid var(--bits-muted);
+    padding: 10px 8px;
+  }
+
+  .px-orgrail__group {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--bits-space-3);
+  }
+
+  .px-orgrail__group > .px-navgroup__label {
+    display: none;
+  }
+
+  .px-orgrail__items {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--bits-space-1);
+  }
+
+  .px-railitem {
+    border-left: 0;
+    border-bottom: 3px solid transparent;
+    white-space: nowrap;
+  }
+
+  .px-railitem[aria-current='page'] {
+    border-left-color: transparent;
+    border-bottom-color: var(--bits-primary);
+  }
+
+  .px-railitem__hint {
+    display: none;
+  }
+}
+
+/*
+ * One installed credential: state, what it is, when it arrived, how to remove
+ * it. Wraps rather than truncating — a token prefix and an account name are
+ * both identifying, and eliding either defeats the row's purpose.
+ */
+.px-credential {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/*
+ * A field the library does not ship: a label over a set of toggles.
+ *
+ * `--bits-font-size-label` and the letter-spacing match what `Input` draws
+ * above its own field, so the label picker sits in the same column of text as
+ * the fields around it rather than looking like a different form.
+ */
+.px-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.px-form__label {
+  font-size: var(--bits-font-size-label);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bits-text-muted);
+}
+
+.px-labelpicker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bits-space-1);
+}
+
+/*
+ * A label as a toggle. Square, 2px-bordered and uppercase like every other
+ * control here; the violet fill is the same "this is selected" signal the
+ * segmented control and the active nav item use.
+ */
+.px-labelchip {
+  padding: 6px 10px;
+  background: transparent;
+  border: 2px solid var(--bits-line);
+  color: var(--bits-text-dim);
+  font: inherit;
+  font-size: var(--bits-font-size-label);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition:
+    border-color 0.12s linear,
+    background 0.12s linear,
+    color 0.12s linear;
+}
+
+.px-labelchip:hover {
+  border-color: var(--bits-line-strong);
+  color: var(--bits-text);
+}
+
+.px-labelchip:focus-visible {
+  outline: none;
+  box-shadow: var(--bits-focus-ring);
+}
+
+.px-labelchip--on {
+  background: var(--bits-primary);
+  border-color: var(--bits-primary);
+  color: var(--bits-ink);
+}

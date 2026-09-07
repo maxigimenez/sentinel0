@@ -222,7 +222,7 @@ profile: a role, a GitHub login (for PR-review routes), and an avatar image URL 
 in Slack).
 
 ```bash
-sentinel0 preflight     # Node, Hermes profiles, cloud, gh auth
+sentinel0 preflight     # Node, Hermes profiles, cloud, tracker credentials
 sentinel0 start
 sentinel0 status
 ```

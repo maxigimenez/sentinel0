@@ -43,19 +43,22 @@ const ISSUES_QUERY = `
 export class LinearService implements TriggerSource, TrackerWriter {
   readonly name = 'linear'
 
+  /**
+   * The key arrives through a provider function, matching GitHub's.
+   *
+   * It used to be a constructor string read once from the environment, which
+   * meant rotating an API key needed a runner restart. Both trackers now
+   * resolve their credential per request from the same store.
+   */
   constructor(
-    private readonly apiKey: string,
+    private readonly apiKey: () => Promise<string>,
     private readonly endpoint: string = 'https://api.linear.app/graphql'
-  ) {
-    if (!apiKey) {
-      throw new Error('LINEAR_API_KEY is required for Linear projects.')
-    }
-  }
+  ) {}
 
   private async request<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
     const response = await fetch(this.endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: this.apiKey },
+      headers: { 'content-type': 'application/json', authorization: await this.apiKey() },
       body: JSON.stringify({ query, variables }),
     })
 

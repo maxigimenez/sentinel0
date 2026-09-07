@@ -2,6 +2,7 @@ import type {
   AgentDescriptor,
   CloudConfig,
   ProjectConfig,
+  ResolvedIntegration,
   RoutingRule,
   RunLogEntry,
   RunRecord,
@@ -26,6 +27,10 @@ export interface RoutesResponse {
 
 export interface ProjectsResponse {
   projects: ProjectConfig[]
+}
+
+export interface IntegrationsResponse {
+  integrations: ResolvedIntegration[]
 }
 
 export class CloudApiError extends Error {
@@ -121,6 +126,18 @@ export class CloudClient {
 
   fetchProjects(): Promise<ProjectsResponse> {
     return this.request<ProjectsResponse>('/v1/runner/projects')
+  }
+
+  /**
+   * The tracker credentials this org holds, decrypted for the runner.
+   *
+   * The org's default and every project override arrive together, already
+   * resolved into a flat list. Precedence is applied in the cloud rather than
+   * here because the cloud owns the project table; a runner working it out
+   * independently would be a second place for the rule to drift.
+   */
+  fetchIntegrations(): Promise<IntegrationsResponse> {
+    return this.request<IntegrationsResponse>('/v1/runner/integrations')
   }
 
   /**

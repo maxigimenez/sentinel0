@@ -10,8 +10,18 @@ import {
   validateRoutingRule,
   type RoutingRule,
 } from '@sentinel0/common'
+import { isIntegrationProvider, INTEGRATION_PROVIDER } from '@sentinel0/common'
+import { GitHubRestClient } from '@sentinel0/common/github'
 import { authenticate, generateKey, newId, parseBearer, type AuthContext } from '../auth.js'
 import type { Database } from '../db.js'
+import {
+  deleteIntegration,
+  listIntegrations,
+  recordFailure,
+  resolveToken,
+  saveIntegration,
+  verifyToken,
+} from '../integrations.js'
 
 /**
  * A ceiling on a hand-written prompt.
@@ -496,6 +506,171 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
       [commandId, orgId]
     )
     return reply.code(202).send({ queued: commandId })
+  })
+
+  // ── Tracker credentials ────────────────────────────────────
+
+  /*
+   * `/v1/integrations/slack` below is a static route and wins over this
+   * parametric one, which is why Slack keeps its own shape. Slack is a
+   * webhook rather than a tracker credential -- it authenticates nothing and
+   * is never handed to a runner -- so folding it into this table would have
+   * meant a column that is null for one provider and required for the others.
+   */
+
+  app.get('/v1/integrations', async (request) => {
+    const { orgId } = authOf(request)
+    return { integrations: await listIntegrations(db, orgId) }
+  })
+
+  /**
+   * Saves a credential for the org, or for one project.
+   *
+   * The token is verified against the provider before it is stored. A
+   * credential saved unverified fails later, on a poll cycle, as a 401 in a
+   * log nobody reads -- while the person who pasted it has already left the
+   * screen believing it worked.
+   */
+  app.put('/v1/integrations/:provider', async (request, reply) => {
+    const { orgId } = authOf(request)
+    const { provider } = request.params as { provider: string }
+    const body = request.body as { token?: string; projectId?: string | null }
+
+    if (!isIntegrationProvider(provider)) {
+      return reply.code(400).send({ error: `Unknown integration provider "${provider}".` })
+    }
+    if (typeof body.token !== 'string' || body.token.trim().length === 0) {
+      return reply.code(400).send({ error: 'A token is required.' })
+    }
+
+    const projectId = body.projectId?.trim() || null
+    if (projectId) {
+      const { rows } = await db.query('SELECT 1 FROM projects WHERE org_id = $1 AND id = $2', [
+        orgId,
+        projectId,
+      ])
+      if (rows.length === 0) {
+        return reply.code(404).send({ error: `No project "${projectId}" in this organization.` })
+      }
+    }
+
+    let identity
+    try {
+      identity = await verifyToken(provider, body.token.trim())
+    } catch (error: unknown) {
+      return reply.code(400).send({
+        error: `${provider} rejected that credential: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+
+    await saveIntegration(db, orgId, {
+      provider,
+      projectId,
+      token: body.token.trim(),
+      identity,
+    })
+    return { ok: true, accountLogin: identity.login, scopes: identity.scopes }
+  })
+
+  app.delete('/v1/integrations/:provider', async (request, reply) => {
+    const { orgId } = authOf(request)
+    const { provider } = request.params as { provider: string }
+    const { projectId } = request.query as { projectId?: string }
+
+    if (!isIntegrationProvider(provider)) {
+      return reply.code(400).send({ error: `Unknown integration provider "${provider}".` })
+    }
+    await deleteIntegration(db, orgId, provider, projectId?.trim() || null)
+    return { ok: true }
+  })
+
+  /**
+   * Repositories the stored GitHub credential can reach.
+   *
+   * This is why the token lives in the cloud rather than only on the runner:
+   * the dashboard cannot call GitHub itself without shipping a token that
+   * grants writing to the operator's repositories into a browser tab. So the
+   * API asks on its behalf and returns only names.
+   */
+  app.get('/v1/integrations/github/repositories', async (request, reply) => {
+    const { orgId } = authOf(request)
+    const { projectId } = request.query as { projectId?: string }
+
+    const token = await resolveToken(
+      db,
+      orgId,
+      INTEGRATION_PROVIDER.GITHUB,
+      projectId?.trim() || null
+    )
+    if (!token) {
+      return reply.code(409).send({ error: 'No GitHub credential is configured.' })
+    }
+
+    try {
+      const repositories = await new GitHubRestClient(async () => token).repositories()
+      return {
+        repositories: repositories.map((repo) => ({
+          slug: repo.full_name,
+          private: repo.private,
+        })),
+      }
+    } catch (error: unknown) {
+      // Recorded against the credential, not just returned. A token that has
+      // been revoked upstream is a fact about the credential, and the
+      // Integrations screen is where someone would look for it -- this is what
+      // puts it there rather than only in the response to one request.
+      const message = error instanceof Error ? error.message : String(error)
+      await recordFailure(
+        db,
+        orgId,
+        INTEGRATION_PROVIDER.GITHUB,
+        projectId?.trim() || null,
+        message
+      )
+      return reply.code(502).send({ error: message })
+    }
+  })
+
+  /**
+   * A repository's labels, for the project filter picker.
+   *
+   * The slug arrives as a query parameter rather than two path segments: a
+   * repository name may contain a dot and Fastify's path matching is happier
+   * with one opaque value than with `:owner/:repo` plus escaping rules.
+   */
+  app.get('/v1/integrations/github/labels', async (request, reply) => {
+    const { orgId } = authOf(request)
+    const { repo: slug, projectId } = request.query as { repo?: string; projectId?: string }
+
+    const parts = slug?.split('/') ?? []
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return reply.code(400).send({ error: 'repo must be "owner/name".' })
+    }
+
+    const token = await resolveToken(
+      db,
+      orgId,
+      INTEGRATION_PROVIDER.GITHUB,
+      projectId?.trim() || null
+    )
+    if (!token) {
+      return reply.code(409).send({ error: 'No GitHub credential is configured.' })
+    }
+
+    try {
+      const labels = await new GitHubRestClient(async () => token).labels(parts[0], parts[1])
+      return { labels: labels.map((label) => label.name) }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      await recordFailure(
+        db,
+        orgId,
+        INTEGRATION_PROVIDER.GITHUB,
+        projectId?.trim() || null,
+        message
+      )
+      return reply.code(502).send({ error: message })
+    }
   })
 
   // ── Slack ──────────────────────────────────────────────────

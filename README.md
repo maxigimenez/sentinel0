@@ -75,7 +75,7 @@ Full walkthrough: **[docs/getting-started.md](./docs/getting-started.md)**
 npm install -g sentinel0
 
 sentinel0 init          # cloud key, Hermes profiles — each key is probed as you enter it
-sentinel0 preflight     # Node, Hermes, cloud, gh auth
+sentinel0 preflight     # Node, Hermes, cloud, tracker credentials
 sentinel0 start
 sentinel0 runner install  # survive reboots (launchd)
 ```
@@ -115,7 +115,7 @@ sentinel0 run --agent product --prompt "Reply with the word ready."
 - **Node.js >= 22.5** — the CLI re-executes itself under a compatible interpreter if
   the active one cannot load `node:sqlite`
 - **Postgres**, for the control plane
-- `gh`, authenticated, if any project pulls from GitHub
+- A GitHub token, added under Settings → Integrations, if any project pulls from GitHub
 
 ## Repository layout
 

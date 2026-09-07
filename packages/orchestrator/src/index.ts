@@ -14,7 +14,6 @@ import {
   type RunStatus,
   type TriggerEvent,
 } from '@sentinel0/common'
-import { HostExecutor } from '@sentinel0/common/executor'
 import { loadConfig, resolveDataDir } from './config-loader.js'
 import { getDatabase } from './database.js'
 import { logger, setLoggerDatabase, setLogLevels } from './logger.js'
@@ -40,6 +39,8 @@ import {
 import { buildProviderServices, trackerWriterFor, triggerSourceFor } from './runtime/services.js'
 import { createApiServer } from './runtime/api-server.js'
 import { validateRuntimeRequirements } from './runtime/preflight.js'
+import { errorMessage } from './runtime/errors.js'
+import { IntegrationStore } from './integrations/store.js'
 
 /** Fallback cadence when there is no cloud to long-poll against. */
 const OFFLINE_POLL_INTERVAL_MS = 20_000
@@ -245,16 +246,21 @@ async function collectEvents(
 }
 
 async function main(): Promise<void> {
-  const executor = new HostExecutor()
   const dataDir = resolveDataDir()
   const db = getDatabase()
   setLoggerDatabase(db)
 
   let config = await loadConfig()
   setLogLevels(config.logs)
-  await validateRuntimeRequirements(config, executor)
 
   const cloud = config.cloud ? new CloudClient(config.cloud) : undefined
+
+  // Credentials load before preflight, because preflight's job is to say which
+  // project has no usable token -- a check that would pass vacuously if it ran
+  // against an empty store.
+  const integrations = new IntegrationStore(cloud)
+  await integrations.refresh()
+  await validateRuntimeRequirements(config, integrations)
   const outbox = cloud
     ? new MirrorOutbox(cloud, db, (message: string) => logger.warn(message))
     : undefined
@@ -365,18 +371,22 @@ async function main(): Promise<void> {
   }, EVENT_MIRROR_INTERVAL_MS)
   eventMirrorTimer.unref()
 
-  let services = buildProviderServices(config, executor)
+  let services = buildProviderServices(integrations)
 
   const reload = async (): Promise<AppConfig> => {
     config = await loadConfig()
     setLogLevels(config.logs)
-    await validateRuntimeRequirements(config, executor)
+    // Before preflight for the same reason as at boot, and before the services
+    // are rebuilt so a credential rotated in the dashboard takes effect on the
+    // next cycle rather than the next restart.
+    await integrations.refresh()
+    await validateRuntimeRequirements(config, integrations)
     runtime.config = config
     runtime.projects = await refreshProjects(dataDir, config.projects, cloud)
     runtime.adapters = buildAdapters(config)
     runtime.agents = await refreshInventory(config, cloud)
     runtime.routes = await refreshRoutes(dataDir, cloud)
-    services = buildProviderServices(config, executor)
+    services = buildProviderServices(integrations)
     return config
   }
 
@@ -918,10 +928,6 @@ function summarizeCycle(tally: CycleTally): string {
     parts.push(`· skipped ${total} (${skipped.map(([r, c]) => `${r} ${c}`).join(', ')})`)
   }
   return parts.join(' ')
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 main().catch((error) => {

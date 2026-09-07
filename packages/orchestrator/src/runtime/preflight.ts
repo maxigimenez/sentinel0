@@ -1,6 +1,6 @@
-import { TICKET_PROVIDER, type AppConfig } from '@sentinel0/common'
-import type { LocalExecutor } from '@sentinel0/common/executor'
+import { INTEGRATION_PROVIDER, TICKET_PROVIDER, type AppConfig } from '@sentinel0/common'
 import { HermesClient } from '../hermes/client.js'
+import type { IntegrationStore } from '../integrations/store.js'
 import { logger } from '../logger.js'
 
 /**
@@ -13,7 +13,7 @@ import { logger } from '../logger.js'
  */
 export async function validateRuntimeRequirements(
   config: AppConfig,
-  executor: LocalExecutor
+  integrations: IntegrationStore
 ): Promise<void> {
   if (!config.hermes) {
     throw new Error('No Hermes gateway configured. Run "sentinel0 init".')
@@ -24,17 +24,25 @@ export async function validateRuntimeRequirements(
     throw new Error('No enabled Hermes profiles. Enable at least one and reload.')
   }
 
-  const requiresLinear = config.projects.some(
-    (project) => project.provider === TICKET_PROVIDER.LINEAR
-  )
-  if (requiresLinear && !process.env.LINEAR_API_KEY) {
-    throw new Error('LINEAR_API_KEY missing; required by at least one Linear project.')
+  // Credentials are checked per project, not per provider: an organization
+  // default covers most of them, and a project carrying its own override is
+  // exactly the one whose absence a provider-wide check would miss.
+  for (const project of config.projects) {
+    if (project.provider !== TICKET_PROVIDER.LINEAR) {
+      continue
+    }
+    if (!integrations.has(INTEGRATION_PROVIDER.LINEAR, project.id)) {
+      throw new Error(
+        `No Linear credential for project "${project.id}". ` +
+          'Add one under Settings → Integrations, or set LINEAR_API_KEY.'
+      )
+    }
   }
 
-  const requiresGitHub = config.projects.some(
+  const gitHubProjects = config.projects.filter(
     (project) => project.provider === TICKET_PROVIDER.GITHUB
   )
-  if (requiresGitHub) {
+  if (gitHubProjects.length > 0) {
     // Not fatal, but worth saying out loud: without a githubLogin an agent
     // cannot be targeted by GitHub identity, so every route that names it is
     // dead -- and a dead route reports nothing at all.
@@ -46,12 +54,16 @@ export async function validateRuntimeRequirements(
       )
     }
 
-    const check = await executor.executeCommand(['gh', 'auth', 'status'], { cwd: process.cwd() })
-    if (check.exitCode === 127) {
-      throw new Error('GitHub CLI not found. Install gh and run "gh auth login".')
-    }
-    if (check.exitCode !== 0) {
-      throw new Error('GitHub CLI is not authenticated. Run "gh auth login".')
+    // Formerly `gh auth status`. Sentinel0 no longer shells out to the GitHub
+    // CLI at all, so what has to exist is a token -- whether it came from the
+    // cloud or from GITHUB_TOKEN on this machine.
+    for (const project of gitHubProjects) {
+      if (!integrations.has(INTEGRATION_PROVIDER.GITHUB, project.id)) {
+        throw new Error(
+          `No GitHub credential for project "${project.id}". ` +
+            'Add one under Settings → Integrations, or set GITHUB_TOKEN.'
+        )
+      }
     }
   }
 }

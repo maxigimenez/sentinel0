@@ -14,7 +14,16 @@ were only ever prefixes, from a throwaway local database, but they read like
 credentials at a glance. The substitution is consistent across files, so the
 cross-references still hold: the key in `me.json` is a row in `keys.json`.
 
-One exception, marked as such: `runs_run_2.json` is `runs_run_1.json` with the
+Two exceptions, marked as such.
+
+`integrations.json` is hand-written. Recording it needs a real GitHub token stored in
+a real database, and the recording would then have to be scrubbed of the very thing
+that makes it interesting. The *shape* is the declared `IntegrationSummary` from
+`@sentinel0/common` rather than a raw row, so unlike the runner and key payloads there
+is no Postgres type-narrowing surprise for a recording to catch — which is the only
+reason this is an acceptable trade.
+
+`runs_run_2.json` is `runs_run_1.json` with the
 approval columns filled in by hand. A run parked at an approval gate cannot be
 recorded without a live Hermes agent that stops for one, so this trades a recorded
 payload for a testable state — the column *shapes* still come off the wire, only the

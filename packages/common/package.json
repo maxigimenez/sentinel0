@@ -14,6 +14,10 @@
       "types": "./dist/executor.d.ts",
       "import": "./dist/executor.js"
     },
+    "./github": {
+      "types": "./dist/github.d.ts",
+      "import": "./dist/github.js"
+    },
     "./prompt-catalog": {
       "types": "./dist/prompt-catalog.d.ts",
       "import": "./dist/prompt-catalog.js"

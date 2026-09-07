@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import type { AgentDescriptor, RoutingRule, RunLogEntry, RunRecord } from '@sentinel0/common'
 import { authenticate, newId, parseBearer, type AuthContext } from '../auth.js'
 import type { Database } from '../db.js'
+import { resolveAllTokens } from '../integrations.js'
 import { notifyRunEvent } from '../notifications/slack.js'
 
 /** How long a command long-poll may be held open. */
@@ -220,6 +221,25 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
       [orgId]
     )
     return { projects: rows }
+  })
+
+  // ── Integrations ───────────────────────────────────────────
+
+  /**
+   * The org's tracker credentials, decrypted.
+   *
+   * This is the one endpoint that returns a plaintext secret, and it is
+   * runner-scoped for that reason: a `snt_usr_` key -- the one a browser holds
+   * -- is rejected by the auth hook before this handler runs.
+   *
+   * Every credential is sent, the organization default and each project
+   * override alike, rather than one per request keyed by project: the runner
+   * watches every project in the org anyway, and resolving them one at a time
+   * would put a round trip in front of each poll cycle.
+   */
+  app.get('/v1/runner/integrations', async (request) => {
+    const { orgId } = authOf(request)
+    return { integrations: await resolveAllTokens(db, orgId) }
   })
 
   // ── Routes ─────────────────────────────────────────────────

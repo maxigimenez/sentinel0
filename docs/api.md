@@ -539,6 +539,86 @@ predating the heartbeat still reads as alive on the strength of its long poll al
 
 ---
 
+## Integrations
+
+The tracker credentials the organization authenticates with. One per provider, plus
+an optional override per project.
+
+```http
+GET    /v1/integrations
+PUT    /v1/integrations/:provider    { "token": "github_pat_…", "projectId": null }
+DELETE /v1/integrations/:provider?projectId=acme%2Fplatform
+```
+
+`:provider` is `github` or `linear`. `projectId` null — or absent — is the
+organization default; naming a project stores an override for that project alone.
+**A project override wins over the organization default**, so one token can cover
+everything while a project that needs a different account carries its own.
+
+`PUT` **verifies the token against the provider before storing it**, and returns the
+account it authenticated as:
+
+```json
+{ "ok": true, "accountLogin": "sentinel0-bot", "scopes": [] }
+```
+
+A credential saved unverified fails later, on a poll cycle, as a 401 in a log nobody
+is reading — while whoever pasted it has already left the screen believing it worked.
+A rejected token comes back as a `400` naming the provider's own complaint.
+
+`GET` never returns a token. It reports a prefix, the account, when it was added and
+whether its last use failed:
+
+```json
+{
+  "integrations": [
+    {
+      "provider": "github",
+      "projectId": null,
+      "tokenPrefix": "github_pat_1",
+      "accountLogin": "sentinel0-bot",
+      "scopes": [],
+      "createdAt": "2026-09-01T10:12:04.221Z",
+      "updatedAt": "2026-09-01T10:12:04.221Z",
+      "lastVerifiedAt": "2026-09-01T10:12:04.221Z",
+      "lastError": null
+    }
+  ]
+}
+```
+
+Tokens are encrypted at rest with AES-256-GCM under `SENTINEL0_SECRET_KEY`. That
+variable is **required** before any credential can be stored; see
+[deploy-cloud.md](./deploy-cloud.md).
+
+### What GitHub scopes are needed
+
+A fine-grained PAT with **Issues: read and write** and **Pull requests: read**.
+Nothing more. Sentinel0 never pushes code, opens pull requests or leaves reviews —
+the agents do all of that under their own accounts inside Hermes. The *write* half of
+Issues is not optional: it is what sets the `sentinel0:in-progress` marker, and
+without the marker every route re-fires on every cycle.
+
+`scopes` is empty for a fine-grained token, because GitHub sends no scope header for
+one. Empty means "not reported", never "no permissions".
+
+### Reading GitHub on the dashboard's behalf
+
+```http
+GET /v1/integrations/github/repositories
+GET /v1/integrations/github/labels?repo=acme/platform
+```
+
+Both call GitHub with the stored credential and return only names. They exist because
+a browser must never hold a token that grants writing to someone's repositories, so
+the API asks on its behalf — which is what lets *Add project* offer a repository
+picker and the repository's real labels instead of a free-form JSON field.
+
+Both answer `409` when no credential is stored, which the dashboard renders as the
+prerequisite it is rather than as an error.
+
+---
+
 ## Slack
 
 ```http
@@ -579,6 +659,7 @@ POST  /v1/runner/hello                    register; resets started_at
 POST  /v1/runner/heartbeat                periodic health, once per poll cycle
 PUT   /v1/runner/inventory                publish discovered agents
 GET   /v1/runner/projects                 pull ticket sources to watch
+GET   /v1/runner/integrations             pull tracker credentials, decrypted
 GET   /v1/runner/routes                   pull enabled routes
 GET   /v1/runner/commands?cursor=&wait=&runner=  long poll, up to 30s
 POST  /v1/runner/commands/ack             { cursor, runner }
@@ -586,6 +667,13 @@ POST  /v1/runner/runs                     mirror a new run
 PATCH /v1/runner/runs/:id                 mirror a status change
 POST  /v1/runner/runs/:id/events          mirror log events
 ```
+
+`GET /v1/runner/integrations` is the only endpoint anywhere that returns a plaintext
+secret, and it is runner-scoped for exactly that reason: a `snt_usr_` key — the kind a
+browser holds — is rejected before the handler runs. The runner keeps what it receives
+in memory only and calls `api.github.com` itself, so the cloud brokers the credential
+rather than proxying the data. Trigger collection therefore survives a cloud outage,
+the same way cached routes do.
 
 `GET /v1/runner/commands` is held open until something arrives or the window closes.
 An empty array is the normal, healthy result — not an error. This is how a runner
