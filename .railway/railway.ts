@@ -48,9 +48,30 @@ export default defineRailway(() => {
       restartPolicyMaxRetries: 5,
     },
     replicas: { 'europe-west4-drams3a': 1 },
-    // preserve() keeps the value already set on Railway without writing a
-    // credential into source.
-    env: { DATABASE_URL: preserve() },
+    /*
+     * `env` is reconciled, not merged: a variable set in the Railway dashboard
+     * and absent here is *removed* on apply. So every variable the service
+     * reads is declared, whether or not it is set today — a name listed with
+     * `preserve()` that does not exist yet is a no-op, while a name omitted is
+     * a deletion waiting for the next `railway config apply`.
+     *
+     * `preserve()` keeps whatever value Railway already holds without writing
+     * a credential into source. That is not a convenience for the secrets: it
+     * is the only reason they can be declared here at all.
+     */
+    env: {
+      DATABASE_URL: preserve(),
+      // Required before any tracker credential can be stored: 32 random bytes
+      // encrypting them at rest. Losing it makes every stored token
+      // unreadable, so it must survive an apply.
+      SENTINEL0_SECRET_KEY: preserve(),
+      DASHBOARD_URL: preserve(),
+      CORS_ORIGINS: preserve(),
+      LOG_LEVEL: preserve(),
+      DATABASE_POOL_MAX: preserve(),
+      DATABASE_SSL: preserve(),
+      SLACK_WEBHOOK_HOST: preserve(),
+    },
   })
 
   // The dashboard. Its own Dockerfile, and no pre-deploy command — it owns no

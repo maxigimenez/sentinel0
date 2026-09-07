@@ -311,6 +311,14 @@ deprecated: services could no longer opt in from 2026-08-28, and it retires on
 unrepresentable — with no root `railway.json`, a new service cannot inherit another's
 builder and silently deploy the wrong image.
 
+A service's `env` block is **reconciled, not merged**: a variable set in the Railway
+dashboard and absent from `railway.ts` is *removed* on apply. So every variable a
+service reads is declared there with `preserve()`, whether or not it is set today — a
+declared name that does not exist yet is a no-op, an undeclared one is a deletion
+waiting for the next apply. `SENTINEL0_SECRET_KEY` is the case that made this
+concrete: it is required, it can only be set outside source, and losing it makes every
+stored credential unreadable. `PORT` stays undeclared because Railway injects it.
+
 `pnpm railway:plan` previews; `pnpm railway:apply` applies after review. Neither
 deploys — `pnpm railway:deploy:api` and `pnpm railway:deploy:dashboard` do that, and
 they reconcile no configuration, so a change to `.railway/railway.ts` needs an apply

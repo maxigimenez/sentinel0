@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g. 0.0.2). Leave blank to publish the current one.'
+        description: 'Version to publish (e.g. 0.0.4). Leave blank to publish the current one.'
         required: false
       dry_run:
         description: Pack and inspect without publishing
