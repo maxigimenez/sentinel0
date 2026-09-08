@@ -147,6 +147,16 @@ explain` (`GET /routes/explain`) re-collects live triggers and reports the one c
 that rejected each, reading history via `changesSince` and never `observe` — a
 diagnostic that advanced the baseline would consume the transition being asked about.
 
+**Matching and targeting fail independently, so explain reports both.** `resolveAgent`
+and `explainTarget` are in the rule engine and shared with the dispatcher rather than
+duplicated, and explain evaluates the target *whatever* the match did. Reporting only
+the first failing match clause hid a live route that named a GitHub identity no profile
+claimed: `hermes.profiles[].githubLogin` is the operator's declaration and nothing
+verifies it, so the route read as an ordinary "did not match" and would have died as
+`unknown-agent` on the day it finally matched. `explainTarget` separates "no agent has
+that identity" from "the agent is disabled", and names the profiles missing a
+`githubLogin` — preflight's warning about them is easy to miss.
+
 **Transition history belongs to the item, not to the trigger type.** One pull request
 raises a `pr_event` and, while a review is outstanding, a `pr_review_requested`;
 observations are keyed on `ref` alone and the poll loop observes once per item per

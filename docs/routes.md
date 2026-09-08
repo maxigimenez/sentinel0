@@ -106,6 +106,12 @@ second when the act is the signal.
 "target": { "agentRef": { "githubLogin": "acme-reviewer" } } // by GitHub identity
 ```
 
+Targeting by `githubLogin` needs the agent to *declare* that identity: set
+`hermes.profiles[].githubLogin` in `~/.sentinel0/config.json`, and check it with
+`sentinel0 agents`. Nothing verifies it for you — a profile that does not declare one
+cannot be found by a route that names it, and `sentinel0 explain` marks such a route
+`broken` whether or not it matched.
+
 `githubLogin` fires only when that account is **named on the item** — assigned to it,
 or asked to review it — which is what makes "act when *this* agent is asked" address
 one agent rather than all of them. It applies to pull request triggers only; the API
@@ -302,6 +308,11 @@ It re-collects triggers and prints, per item, the one clause that rejected it:
       skips    Reviewer agent: match.reviewersAdded wants any of [EomiAIBot]; nothing
                changed there this cycle (nothing)
 ```
+
+A route that cannot resolve its agent is reported as `broken` on every item, whatever
+its match did — matching and targeting fail independently, and a route naming a GitHub
+identity no profile claims reads as an ordinary "did not match" right up until the day
+it matches and dies instead.
 
 It reads history without recording any, so asking does not consume the transition you
 are asking about, and the answer is the same every time until something really changes.

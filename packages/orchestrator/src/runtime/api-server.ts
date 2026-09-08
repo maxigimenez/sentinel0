@@ -14,7 +14,7 @@ import {
 import type { Sentinel0Database } from '../database.js'
 import { readRunnerErrors } from './diagnostics.js'
 import { isAllowedBrowserOrigin } from './network-access.js'
-import { explainRule } from '../routing/rule-engine.js'
+import { explainRule, explainTarget } from '../routing/rule-engine.js'
 import { changesForNewItem, isBornSinceWatermark } from '../triggers/history.js'
 
 export interface ApiServerDeps {
@@ -76,6 +76,14 @@ function explainRouting(
         routeName: route.name,
         matched: reason === undefined,
         reason,
+        /**
+         * Whether the route's agent resolves, evaluated *whatever* the match
+         * did. Matching and targeting fail independently, and reporting only
+         * the first failing match clause hid a route that named a GitHub
+         * identity no profile claimed -- so it read as an ordinary "did not
+         * match" until the day it matched and died instead.
+         */
+        targetProblem: explainTarget(deps.getAgents(), route.target),
       }
     })
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   TICKET_PROVIDER,
   TRIGGER_TYPE,
+  type AgentDescriptor,
   type AppConfig,
   type ProjectConfig,
   type RoutingRule,
@@ -121,6 +122,66 @@ describe('GET /routes/explain', () => {
     expect(second.json().items[0].verdicts[0].matched).toBe(true)
     // Explaining must not move the watermark either.
     expect(db.watermarkFor('trackside')).toBe('2026-09-07T12:00:00Z')
+    await app.close()
+  })
+
+  it('flags a target that cannot resolve, even while the match fails for another reason', async () => {
+    // Exactly the shape that cost a day: the eomi profile is up and working,
+    // but no profile declares itself as EomiAIBot, so the route can never run.
+    // The match fails first, on an unrelated clause, and used to be all that
+    // was reported.
+    const db = openDatabase('memory')
+    seen(db, ['EomiAIBot'])
+
+    const app = await createApiServer({
+      getConfig: () => ({ server: { apiPort: 0, networkAccess: false } }) as AppConfig,
+      getProjects: () => [project],
+      getAgents: (): AgentDescriptor[] => [
+        { profile: 'eomi', toolsets: [], skills: [], enabled: true, discoveredAt: 0 },
+      ],
+      getRoutes: () => [route],
+      db,
+      dataDir: '/tmp',
+      collectTriggers: async () => [reviewRequested(['EomiAIBot'])],
+    } as unknown as ApiServerDeps)
+
+    const verdict = (await app.inject({ method: 'GET', url: '/routes/explain' })).json().items[0]
+      .verdicts[0]
+
+    expect(verdict.matched).toBe(false)
+    expect(verdict.reason).toContain('match.reviewersAdded')
+    expect(verdict.targetProblem).toContain('no enabled agent has githubLogin "EomiAIBot"')
+    await app.close()
+  })
+
+  it('reports no target problem once a profile claims the identity', async () => {
+    const db = openDatabase('memory')
+    seen(db, [])
+
+    const app = await createApiServer({
+      getConfig: () => ({ server: { apiPort: 0, networkAccess: false } }) as AppConfig,
+      getProjects: () => [project],
+      getAgents: (): AgentDescriptor[] => [
+        {
+          profile: 'eomi',
+          githubLogin: 'EomiAIBot',
+          toolsets: [],
+          skills: [],
+          enabled: true,
+          discoveredAt: 0,
+        },
+      ],
+      getRoutes: () => [route],
+      db,
+      dataDir: '/tmp',
+      collectTriggers: async () => [reviewRequested(['EomiAIBot'])],
+    } as unknown as ApiServerDeps)
+
+    const verdict = (await app.inject({ method: 'GET', url: '/routes/explain' })).json().items[0]
+      .verdicts[0]
+
+    expect(verdict.matched).toBe(true)
+    expect(verdict.targetProblem).toBeUndefined()
     await app.close()
   })
 
