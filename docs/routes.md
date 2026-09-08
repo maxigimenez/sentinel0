@@ -155,6 +155,29 @@ mechanisms prevent that.
   where labels cannot be written.
 - **`per-change`** — fires again each time the item changes. Required for anything
   with rounds, and only accepted with `markers` on.
+- **`while-matched`** — fires once per continuous stretch of matching. It claims the
+  item on the first cycle that matches, holds the claim for as long as it keeps
+  matching, and re-arms the moment it stops.
+
+`while-matched` is what makes a **state** clause usable, and it is the answer to a
+problem transitions cannot solve. A transition fires only on the single cycle that
+observes the change, so a review requested before the route existed — or while the
+runner was down — is unreachable *forever*: the transition already happened, and no
+operator action brings it back. Re-requesting does not help either, because a reviewer
+who has not yet reviewed never leaves the outstanding set, so removing and re-adding
+them inside one poll window is invisible.
+
+"A review is outstanding" is true for as long as it is true. The claim is what stops a
+second run while it stays true, and releasing it is what lets the next request through.
+
+Two consequences worth knowing:
+
+- **Enabling a `while-matched` route acts on everything already matching.** That is the
+  point — it is how a waiting pull request gets picked up — but on a busy repository it
+  is a batch of work at once, serialised by the one-run-per-agent rule.
+- A claim is never released while its run is unfinished, and a project whose tracker
+  could not be reached is skipped entirely rather than read as "nothing matches" — an
+  outage must not re-arm every route at once.
 
 ### `guard.markers`
 
@@ -182,11 +205,17 @@ something that failed.
 | You want | `refire` | Why |
 |---|---|---|
 | act on a ticket, once | `once` | the default; cannot loop |
-| review every time you are asked | `per-change` + `reviewersAdded` | only a request re-fires it |
+| review whatever is waiting on you | `while-matched` + `reviewers` | catches requests made before the route existed |
+| review only when newly asked | `per-change` + `reviewersAdded` | ignores anything already outstanding |
 | act on each label change | `per-change` + `labelsAdded` | only labelling re-fires it |
+| work anything carrying a label | `while-matched` + `labels` | re-arms when the label comes off |
 
 The pattern for `per-change`: pair it with a **transition** clause. Then only the human
 act re-fires the route, and nothing the agent does can.
+
+The pattern for `while-matched`: pair it with a **state** clause that the agent's own
+work makes false — an outstanding review request the agent answers, a label an outcome
+removes. That is what re-arms it, and what stops it looping.
 
 ---
 
@@ -273,7 +302,7 @@ pull request under its own identity. Its Hermes profile needs a working director
 git credentials for the repository.
 
 ### Review a pull request, every time you are asked
-`pr_review_requested` · `reviewersAdded` · `per-change`. Request review → the agent
+`pr_review_requested` · `reviewers` · `while-matched`. Request review → the agent
 reviews → you reply and re-request → it reads the thread and reviews again. Pushing
 commits or replying does not re-summon it; only a fresh request does.
 
@@ -328,6 +357,10 @@ poll: 12 event(s) (taplands 12) · dispatched 1 · skipped 11 (no-route 10, dupl
 `0 event(s)` means the item was never fetched: no projects (`sentinel0 projects`), or
 the project's `filters` excluded it. `no-route` means it was fetched and nothing
 matched. `unknown-agent` means the route names a profile absent from `sentinel0 agents`.
+
+**A review that was already outstanding is never picked up.** A transition clause needs
+to witness the request appear, and that moment has passed. Switch the route to
+`while-matched` + `match.reviewers`, which acts on the state instead.
 
 **It fired once and never again.** That is `refire: "once"`. The item now carries
 `sentinel0:done` — remove it to re-arm, or switch to `per-change` with a transition

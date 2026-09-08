@@ -289,12 +289,21 @@ export function evaluate(rules: readonly RoutingRule[], event: TriggerEvent): Ro
  * structural half of the loop guard: even where marker labels cannot be
  * written -- a tracker that rejects the label, a permissions problem -- a route
  * still cannot retrigger itself off the work it caused.
+ *
+ * `while-matched` excludes it for the same reason and re-arms differently: the
+ * claim is released when the item stops matching, so the key must be the one a
+ * later cycle would compute for the same item.
  */
 export function dedupeKey(rule: RoutingRule, event: TriggerEvent): string {
-  const parts =
-    guardOf(rule).refire === 'once'
-      ? [rule.id, event.type, event.ref]
-      : [rule.id, event.type, event.ref, event.revision]
+  const parts = holdsClaimAcrossRevisions(rule)
+    ? [rule.id, event.type, event.ref]
+    : [rule.id, event.type, event.ref, event.revision]
 
   return createHash('sha1').update(parts.join(' ')).digest('hex')
+}
+
+/** Whether a route's dedupe key ignores the item's revision. */
+export function holdsClaimAcrossRevisions(rule: RoutingRule): boolean {
+  const refire = guardOf(rule).refire
+  return refire === 'once' || refire === 'while-matched'
 }

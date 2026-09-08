@@ -64,8 +64,8 @@ export function validateRoutingRule(route: RoutingRule): string | undefined {
   }
 
   if (route.guard) {
-    if (route.guard.refire !== 'once' && route.guard.refire !== 'per-change') {
-      return 'guard.refire must be "once" or "per-change".'
+    if (!['once', 'per-change', 'while-matched'].includes(route.guard.refire)) {
+      return 'guard.refire must be "once", "per-change" or "while-matched".'
     }
     if (route.guard.markers !== undefined && typeof route.guard.markers !== 'boolean') {
       return 'guard.markers must be a boolean.'

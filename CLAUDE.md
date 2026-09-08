@@ -185,6 +185,21 @@ loop and driven directly by the tests. Both bugs above shipped past a green suit
 helpers re-implemented the loop — the unit tests handed `changes` to the rule engine and
 so could not see that the real pipeline never produced it.
 
+**`while-matched` is the third refire mode, and it exists because a transition clause
+can be structurally unreachable.** A transition fires only on the cycle that observes
+it, so a review requested before the route existed, or while the runner was down, is
+lost permanently — and re-requesting does not recover it, since a reviewer who has not
+reviewed never leaves the outstanding set, making a remove-and-re-add inside one poll
+window invisible. `while-matched` claims the item on the first matching cycle, keeps
+`dedupeKey` free of the revision so pushes cannot re-fire it, and releases the claim
+when the item stops matching (`releaseUnmatchedClaims`). Two things guard that release:
+a claim whose run has not settled is never dropped — mid-run the item carries
+`sentinel0:in-progress` and so stops matching by construction — and `collectEvents`
+returns `undefined` rather than `[]` on failure, because a tracker outage read as
+"nothing matches" would re-arm every route and replay the lot. The shipped reviewer
+template now uses it with `match.reviewers`; enabling such a route acts on everything
+already matching, which is the point and also worth saying out loud.
+
 Two invariants the dispatcher enforces:
 
 1. **One run per agent.** Hermes corrupts a profile's memory if two agents drive it

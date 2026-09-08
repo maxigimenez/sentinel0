@@ -200,16 +200,23 @@ export const ROUTE_CATALOG: RouteTemplate[] = [
       name: 'Reviewer agent',
       priority: 100,
       enabled: true,
-      // per-change is required for repeat rounds, and is safe here because
-      // nothing the agent does adds a reviewer.
-      guard: { refire: 'per-change', markers: true },
+      // Fire once per stretch of being asked. The claim is held while the
+      // request is outstanding -- so pushes and replies start nothing -- and
+      // released when it lapses, which is what lets the next request through.
+      guard: { refire: 'while-matched', markers: true },
       trigger: { type: 'pr_review_requested', provider: 'github', projectId: '<PROJECT_ID>' },
-      // Transition, deliberately. `match.reviewers` would also fire here and
-      // would additionally catch a request made while the runner was down --
-      // but a pull request's revision includes its updatedAt, so under
-      // per-change refiring every push would start another review round. Being
-      // asked is the signal; still being an outstanding reviewer is not.
-      match: { reviewersAdded: { any: ['<AGENT_GITHUB_LOGIN>'] } },
+      // State, not transition. `reviewersAdded` fires only on the single cycle
+      // that observes the request appear, so a review requested before this
+      // route existed, or while the runner was down, was unreachable forever --
+      // the transition had already happened and no operator action brought it
+      // back. Re-requesting does not help either: a reviewer who has not yet
+      // reviewed never leaves the outstanding set, so removing and re-adding
+      // them inside one poll window is invisible.
+      //
+      // "A review is outstanding" is true for as long as it is true, which is
+      // exactly what while-matched needs. It does mean that enabling this route
+      // acts on every pull request already waiting on the agent.
+      match: { reviewers: { any: ['<AGENT_GITHUB_LOGIN>'] } },
       target: { agentRef: { githubLogin: '<AGENT_GITHUB_LOGIN>' } },
       execution: {
         prompt: [
