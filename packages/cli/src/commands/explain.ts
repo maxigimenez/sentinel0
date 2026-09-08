@@ -8,6 +8,8 @@ interface Verdict {
   routeName: string
   matched: boolean
   reason?: string
+  /** Set when the route's agent cannot be resolved, whatever the match did. */
+  targetProblem?: string
 }
 
 interface ExplainItem {
@@ -94,8 +96,19 @@ export async function runExplain(
       } else {
         console.log(chalk.dim(`      skips    ${verdict.routeName}: ${verdict.reason}`))
       }
+      // Always, and in red: a route whose target does not resolve cannot run
+      // even on the day it matches, and printing this only when it matched is
+      // what let it hide behind an unrelated clause.
+      if (verdict.targetProblem) {
+        console.log(chalk.red(`      broken   ${verdict.routeName}: ${verdict.targetProblem}`))
+      }
     }
     console.log('')
+  }
+
+  if (items.some((item) => item.verdicts.some((verdict) => verdict.targetProblem))) {
+    console.log(chalk.red('  A route marked broken cannot run even when it matches.'))
+    console.log(chalk.dim('  sentinel0 agents    shows which identity each profile acts as\n'))
   }
 
   // A matching route is not a dispatched one, and conflating the two sends

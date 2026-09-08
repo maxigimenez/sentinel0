@@ -354,10 +354,23 @@ export interface RouteOutcome {
  */
 export interface RouteGuard {
   /**
-   * `once`       fire at most once per item, whatever changes afterwards.
-   * `per-change` fire again each time the item changes.
+   * `once`          fire at most once per item, whatever changes afterwards.
+   * `per-change`    fire again each time the item changes.
+   * `while-matched` fire once per continuous stretch of matching: claim on the
+   *                 first cycle the item matches, hold the claim for as long as
+   *                 it keeps matching, and re-arm once it stops.
+   *
+   * `while-matched` is what makes a *state* clause usable. A transition clause
+   * can only fire on the one cycle that observes the change, so a review
+   * requested before the route existed, or while the runner was down, is
+   * unreachable forever -- there is no operator action that recovers it, since
+   * the transition already happened. Matching on the state instead ("a review
+   * is outstanding") is always true while it is true, and under `per-change` a
+   * pull request's revision moves on every push, so it would start a fresh run
+   * for each commit. Holding the claim until the condition lapses is what
+   * separates "still waiting" from "asked again".
    */
-  refire: 'once' | 'per-change'
+  refire: 'once' | 'per-change' | 'while-matched'
   /**
    * Apply `sentinel0:` marker labels around the run, and skip items already
    * carrying one. Markers make an in-flight run visible in the tracker and let

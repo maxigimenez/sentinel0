@@ -22,6 +22,7 @@ import { HermesAdapter, mapHermesStatus } from './hermes/adapter.js'
 import type { HermesRunState } from './hermes/types.js'
 import { createClientForProfile, discoverAgents } from './hermes/discovery.js'
 import { Dispatcher, type OutcomeHandlers, type PromptRunRequest } from './routing/dispatcher.js'
+import { guardOf, matchesRule } from './routing/rule-engine.js'
 import { RunLifecycle } from './routing/run-lifecycle.js'
 import {
   CloudClient,
@@ -234,15 +235,49 @@ async function refreshRoutes(dataDir: string, cloud?: CloudClient): Promise<Rout
   }
 }
 
+/**
+ * Returns undefined when collection failed, rather than an empty list.
+ *
+ * The difference is load-bearing for `while-matched` routes: "nothing matches
+ * any more" releases their claims, and a tracker outage that reported itself as
+ * an empty repository would re-arm every route on the next cycle and replay the
+ * lot.
+ */
 async function collectEvents(
   project: ProjectConfig,
   services: ReturnType<typeof buildProviderServices>
-): Promise<TriggerEvent[]> {
+): Promise<TriggerEvent[] | undefined> {
   try {
     return await triggerSourceFor(project, services).collect(project)
   } catch (error: unknown) {
     logger.error(`Trigger collection failed for project "${project.id}": ${errorMessage(error)}`)
-    return []
+    return undefined
+  }
+}
+
+/**
+ * Re-arms `while-matched` routes whose items no longer match.
+ *
+ * Runs after dispatch so a claim taken this cycle is not immediately released,
+ * and evaluates the rule directly rather than reusing the dispatcher's decision
+ * -- a route that matched but lost on priority still legitimately holds nothing,
+ * while one that matched and won must keep its claim.
+ */
+function releaseLapsedClaims(
+  db: ReturnType<typeof getDatabase>,
+  routes: readonly RoutingRule[],
+  events: readonly TriggerEvent[]
+): void {
+  for (const route of routes) {
+    if (guardOf(route).refire !== 'while-matched') {
+      continue
+    }
+    const matched = events.filter((event) => matchesRule(route, event)).map((event) => event.ref)
+
+    const released = db.releaseUnmatchedClaims(route.id, [...new Set(matched)])
+    if (released > 0) {
+      logger.info(`Re-armed route "${route.name}" for ${released} item(s) that stopped matching.`)
+    }
   }
 }
 
@@ -812,12 +847,23 @@ async function main(): Promise<void> {
 
       for (const project of runtime.projects) {
         const events = await collectEvents(project, services)
+        if (!events) {
+          // Collection failed and already logged. Skipping the whole project is
+          // the point: a route must not be re-armed because a tracker was down.
+          tally.perProject.push(`${project.id} unavailable`)
+          continue
+        }
         tally.collected += events.length
         tally.perProject.push(`${project.id} ${events.length}`)
 
-        for (const event of observeCycle(db, project.id, events)) {
+        const observed = observeCycle(db, project.id, events)
+        for (const event of observed) {
           void runDispatch(project, event, tally)
         }
+
+        // After dispatch, so a claim taken this cycle survives it.
+        await sleep(0)
+        releaseLapsedClaims(db, runtime.routes, observed)
       }
 
       // Routing decisions resolve synchronously ahead of the agent run, so a

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   TICKET_PROVIDER,
   TRIGGER_TYPE,
+  type AgentDescriptor,
   type RoutingRule,
   type TriggerEvent,
 } from '@sentinel0/common'
@@ -9,8 +10,10 @@ import {
   dedupeKey,
   evaluate,
   explainRule,
+  explainTarget,
   matchesRule,
   matchesSet,
+  resolveAgent,
 } from '../../src/routing/rule-engine.js'
 
 function rule(overrides: Partial<RoutingRule> = {}): RoutingRule {
@@ -252,5 +255,66 @@ describe('explainRule', () => {
   it('explains a marker label holding a once-route back', () => {
     const once = rule({ guard: { refire: 'once', markers: true } })
     expect(explainRule(once, event({ labels: ['sentinel0:done'] }))).toContain('re-arm')
+  })
+})
+
+describe('explainTarget', () => {
+  const agent = (overrides: Partial<AgentDescriptor> = {}): AgentDescriptor => ({
+    profile: 'eomi',
+    toolsets: [],
+    skills: [],
+    enabled: true,
+    discoveredAt: 0,
+    ...overrides,
+  })
+
+  it('says nothing when the target resolves by profile', () => {
+    expect(explainTarget([agent()], { agentRef: { profile: 'eomi' } })).toBeUndefined()
+  })
+
+  it('says nothing when the target resolves by GitHub identity, case-insensitively', () => {
+    const agents = [agent({ githubLogin: 'EomiAIBot' })]
+    expect(explainTarget(agents, { agentRef: { githubLogin: 'eomiaibot' } })).toBeUndefined()
+  })
+
+  it('names a profile nothing answers to', () => {
+    expect(explainTarget([agent()], { agentRef: { profile: 'ghost' } })).toContain(
+      'no agent has the profile "ghost"'
+    )
+  })
+
+  it('distinguishes a disabled agent from a missing one', () => {
+    const agents = [agent({ enabled: false })]
+    expect(explainTarget(agents, { agentRef: { profile: 'eomi' } })).toContain('is disabled')
+  })
+
+  it('points at the unset githubLogin, which is the actual cause', () => {
+    // The profile exists and works; nobody told Sentinel0 which account it is.
+    const agents = [agent({ profile: 'eomi' }), agent({ profile: 'james' })]
+    const problem = explainTarget(agents, { agentRef: { githubLogin: 'EomiAIBot' } })
+
+    expect(problem).toContain('no enabled agent has githubLogin "EomiAIBot"')
+    expect(problem).toContain('eomi, james')
+    expect(problem).toContain('config.json')
+  })
+
+  it('does not blame an unset login when some agent does claim the identity', () => {
+    const agents = [agent({ githubLogin: 'EomiAIBot', enabled: false })]
+    expect(explainTarget(agents, { agentRef: { githubLogin: 'EomiAIBot' } })).toContain(
+      'is disabled'
+    )
+  })
+
+  it('rejects a target that names nothing at all', () => {
+    expect(explainTarget([agent()], { agentRef: {} })).toContain('neither a profile nor a')
+  })
+})
+
+describe('resolveAgent is the dispatcher’s own resolution', () => {
+  it('ignores disabled agents, so a match cannot start a switched-off profile', () => {
+    const agents: AgentDescriptor[] = [
+      { profile: 'eomi', toolsets: [], skills: [], enabled: false, discoveredAt: 0 },
+    ]
+    expect(resolveAgent(agents, { agentRef: { profile: 'eomi' } })).toBeUndefined()
   })
 })

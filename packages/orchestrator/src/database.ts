@@ -12,6 +12,13 @@ import {
   type TriggerChanges,
 } from '@sentinel0/common'
 
+/** A run that has not settled still owns its dispatch claim. */
+const ACTIVE_RUN_STATUSES: readonly RunStatus[] = [
+  RUN_STATUS.QUEUED,
+  RUN_STATUS.RUNNING,
+  RUN_STATUS.AWAITING_APPROVAL,
+]
+
 /** Members of `next` that were not in `previous`, compared case-insensitively. */
 function added(previous: string[], next: string[]): string[] {
   const before = new Set(previous.map((value) => value.toLowerCase()))
@@ -624,6 +631,35 @@ export class Sentinel0Database {
    * Undo a claim. Used when dispatch fails before the agent was ever reached,
    * so a transient error does not permanently suppress that trigger.
    */
+  /**
+   * Releases a `while-matched` route's claims on items it no longer matches.
+   *
+   * This is what re-arms such a route. A claim held while the condition is true
+   * is what stops a fresh run on every push; releasing it the moment the
+   * condition lapses is what lets the *next* request through.
+   *
+   * A claim whose run has not finished is never released -- during a run the
+   * item carries `sentinel0:in-progress` and so stops matching by construction,
+   * and releasing on that basis would re-arm the route against the work it is
+   * still doing.
+   */
+  releaseUnmatchedClaims(routeId: string, matchedRefs: readonly string[]): number {
+    const placeholders = matchedRefs.map(() => '?').join(', ')
+    const notMatched = matchedRefs.length > 0 ? `AND triggerRef NOT IN (${placeholders})` : ''
+    const active = ACTIVE_RUN_STATUSES.map(() => '?').join(', ')
+
+    const result = this.db
+      .prepare(
+        `DELETE FROM dispatch_ledger
+          WHERE routeId = ?
+            ${notMatched}
+            AND runId NOT IN (SELECT id FROM runs WHERE status IN (${active}))`
+      )
+      .run(routeId, ...matchedRefs, ...ACTIVE_RUN_STATUSES)
+
+    return Number(result.changes)
+  }
+
   releaseDispatch(dedupeKey: string): void {
     this.db.prepare('DELETE FROM dispatch_ledger WHERE dedupeKey = ?').run(dedupeKey)
   }

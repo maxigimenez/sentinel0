@@ -15,7 +15,7 @@ import type { Sentinel0Database } from '../database.js'
 import type { HermesAdapter, HermesRunOutcome } from '../hermes/adapter.js'
 import { renderRoutePrompt } from '../prompts/render.js'
 import { resolveSummary } from '../prompts/output-contract.js'
-import { dedupeKey, evaluate, guardOf } from './rule-engine.js'
+import { dedupeKey, evaluate, guardOf, resolveAgent } from './rule-engine.js'
 import type { RunLifecycle } from './run-lifecycle.js'
 
 export type DispatchResult =
@@ -129,22 +129,6 @@ export class Dispatcher {
   }
 
   /** Resolve `target.agentRef` to a concrete, enabled profile. */
-  private resolveAgent(route: RoutingRule): AgentDescriptor | undefined {
-    const { profile, githubLogin } = route.target.agentRef
-    return this.deps.agents.find((agent) => {
-      if (!agent.enabled) {
-        return false
-      }
-      if (profile) {
-        return agent.profile === profile
-      }
-      if (githubLogin) {
-        return agent.githubLogin?.toLowerCase() === githubLogin.toLowerCase()
-      }
-      return false
-    })
-  }
-
   /**
    * @param onDecision Called the moment routing is decided, before the agent
    *   run begins. A run can take half an hour, so anything that wants to report
@@ -165,7 +149,7 @@ export class Dispatcher {
       return decide({ outcome: 'skipped', reason: 'no-route' })
     }
 
-    const agent = this.resolveAgent(route)
+    const agent = resolveAgent(this.deps.agents, route.target)
     if (!agent) {
       const ref = route.target.agentRef
       const detail = `Route "${route.id}" targets ${ref.profile ? `profile "${ref.profile}"` : `github login "${ref.githubLogin}"`}, which is not a known enabled agent.`

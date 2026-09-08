@@ -2,11 +2,80 @@ import { createHash } from 'node:crypto'
 import {
   DEFAULT_ROUTE_GUARD,
   SENTINEL0_LABEL,
+  type AgentDescriptor,
   type RouteGuard,
+  type RouteTarget,
   type RoutingRule,
   type StringSetMatch,
   type TriggerEvent,
 } from '@sentinel0/common'
+
+/**
+ * The agent a route addresses, or undefined when nothing answers to it.
+ *
+ * Pure, and shared with the dispatcher rather than duplicated, so that a
+ * diagnostic asking "could this route ever run" gets the same answer the
+ * dispatcher would give. Matching and targeting fail independently: a route can
+ * match perfectly and still address a profile that does not exist, which is
+ * invisible until the day it finally matches.
+ */
+export function resolveAgent(
+  agents: readonly AgentDescriptor[],
+  target: RouteTarget
+): AgentDescriptor | undefined {
+  const { profile, githubLogin } = target.agentRef
+  return agents.find((agent) => {
+    if (!agent.enabled) {
+      return false
+    }
+    if (profile) {
+      return agent.profile === profile
+    }
+    if (githubLogin) {
+      return agent.githubLogin?.toLowerCase() === githubLogin.toLowerCase()
+    }
+    return false
+  })
+}
+
+/**
+ * Why a route's target does not resolve, or undefined when it does.
+ *
+ * Separates "no agent has that identity" from "the agent is switched off",
+ * because the fix is different and the symptom is identical.
+ */
+export function explainTarget(
+  agents: readonly AgentDescriptor[],
+  target: RouteTarget
+): string | undefined {
+  if (resolveAgent(agents, target)) {
+    return undefined
+  }
+
+  const { profile, githubLogin } = target.agentRef
+  if (!profile && !githubLogin) {
+    return 'target.agentRef names neither a profile nor a githubLogin'
+  }
+
+  if (profile) {
+    const disabled = agents.some((agent) => agent.profile === profile)
+    return disabled ? `profile "${profile}" is disabled` : `no agent has the profile "${profile}"`
+  }
+
+  // The case that cost a day: the profile exists and works, but nobody told
+  // Sentinel0 which GitHub account it acts as, so a route addressing it by
+  // identity can never find it.
+  const wanted = githubLogin!.toLowerCase()
+  const disabled = agents.some((agent) => agent.githubLogin?.toLowerCase() === wanted)
+  if (disabled) {
+    return `the agent with githubLogin "${githubLogin}" is disabled`
+  }
+  const anonymous = agents.filter((agent) => !agent.githubLogin).map((agent) => agent.profile)
+  const hint = anonymous.length
+    ? ` (${anonymous.join(', ')} ${anonymous.length === 1 ? 'has' : 'have'} no githubLogin set — see hermes.profiles[].githubLogin in ~/.sentinel0/config.json)`
+    : ''
+  return `no enabled agent has githubLogin "${githubLogin}"${hint}`
+}
 
 export function guardOf(rule: RoutingRule): RouteGuard {
   return { ...DEFAULT_ROUTE_GUARD, ...rule.guard }
@@ -220,12 +289,21 @@ export function evaluate(rules: readonly RoutingRule[], event: TriggerEvent): Ro
  * structural half of the loop guard: even where marker labels cannot be
  * written -- a tracker that rejects the label, a permissions problem -- a route
  * still cannot retrigger itself off the work it caused.
+ *
+ * `while-matched` excludes it for the same reason and re-arms differently: the
+ * claim is released when the item stops matching, so the key must be the one a
+ * later cycle would compute for the same item.
  */
 export function dedupeKey(rule: RoutingRule, event: TriggerEvent): string {
-  const parts =
-    guardOf(rule).refire === 'once'
-      ? [rule.id, event.type, event.ref]
-      : [rule.id, event.type, event.ref, event.revision]
+  const parts = holdsClaimAcrossRevisions(rule)
+    ? [rule.id, event.type, event.ref]
+    : [rule.id, event.type, event.ref, event.revision]
 
   return createHash('sha1').update(parts.join(' ')).digest('hex')
+}
+
+/** Whether a route's dedupe key ignores the item's revision. */
+export function holdsClaimAcrossRevisions(rule: RoutingRule): boolean {
+  const refire = guardOf(rule).refire
+  return refire === 'once' || refire === 'while-matched'
 }

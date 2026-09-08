@@ -147,6 +147,16 @@ explain` (`GET /routes/explain`) re-collects live triggers and reports the one c
 that rejected each, reading history via `changesSince` and never `observe` — a
 diagnostic that advanced the baseline would consume the transition being asked about.
 
+**Matching and targeting fail independently, so explain reports both.** `resolveAgent`
+and `explainTarget` are in the rule engine and shared with the dispatcher rather than
+duplicated, and explain evaluates the target *whatever* the match did. Reporting only
+the first failing match clause hid a live route that named a GitHub identity no profile
+claimed: `hermes.profiles[].githubLogin` is the operator's declaration and nothing
+verifies it, so the route read as an ordinary "did not match" and would have died as
+`unknown-agent` on the day it finally matched. `explainTarget` separates "no agent has
+that identity" from "the agent is disabled", and names the profiles missing a
+`githubLogin` — preflight's warning about them is easy to miss.
+
 **Transition history belongs to the item, not to the trigger type.** One pull request
 raises a `pr_event` and, while a review is outstanding, a `pr_review_requested`;
 observations are keyed on `ref` alone and the poll loop observes once per item per
@@ -174,6 +184,21 @@ and it is monotonic because a reopened item can arrive with an older timestamp.
 loop and driven directly by the tests. Both bugs above shipped past a green suite whose
 helpers re-implemented the loop — the unit tests handed `changes` to the rule engine and
 so could not see that the real pipeline never produced it.
+
+**`while-matched` is the third refire mode, and it exists because a transition clause
+can be structurally unreachable.** A transition fires only on the cycle that observes
+it, so a review requested before the route existed, or while the runner was down, is
+lost permanently — and re-requesting does not recover it, since a reviewer who has not
+reviewed never leaves the outstanding set, making a remove-and-re-add inside one poll
+window invisible. `while-matched` claims the item on the first matching cycle, keeps
+`dedupeKey` free of the revision so pushes cannot re-fire it, and releases the claim
+when the item stops matching (`releaseUnmatchedClaims`). Two things guard that release:
+a claim whose run has not settled is never dropped — mid-run the item carries
+`sentinel0:in-progress` and so stops matching by construction — and `collectEvents`
+returns `undefined` rather than `[]` on failure, because a tracker outage read as
+"nothing matches" would re-arm every route and replay the lot. The shipped reviewer
+template now uses it with `match.reviewers`; enabling such a route acts on everything
+already matching, which is the point and also worth saying out loud.
 
 Two invariants the dispatcher enforces:
 

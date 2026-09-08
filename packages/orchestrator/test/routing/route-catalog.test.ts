@@ -11,7 +11,7 @@ import {
   type TriggerEvent,
 } from '@sentinel0/common'
 import { renderPromptText } from '../../src/prompts/render.js'
-import { matchesRule } from '../../src/routing/rule-engine.js'
+import { dedupeKey, guardOf, matchesRule } from '../../src/routing/rule-engine.js'
 
 /** The values a user would type into the dashboard. */
 const ANSWERS: Record<string, string> = {
@@ -125,7 +125,7 @@ describe('the templates actually fire on what they describe', () => {
     ).toBe(true)
   })
 
-  it('pr-review-cycle fires on each review request and nothing else', () => {
+  it('pr-review-cycle acts whenever a review is outstanding', () => {
     const route = filled('pr-review-cycle')
     const base = event({
       type: TRIGGER_TYPE.PR_REVIEW_REQUESTED,
@@ -134,25 +134,38 @@ describe('the templates actually fire on what they describe', () => {
       prNumber: 7,
       requestedReviewers: ['acme-reviewer'],
     })
-    const changes = (reviewersAdded: string[]) => ({
-      labelsAdded: [],
-      labelsRemoved: [],
-      assigneesAdded: [],
-      assigneesRemoved: [],
-      reviewersAdded,
+
+    // State, so it does not depend on having witnessed the request appear. This
+    // is the case a transition clause could never reach: a review asked for
+    // before the route existed, or while the runner was down.
+    expect(matchesRule(route, base)).toBe(true)
+
+    // Still true on later cycles -- what stops a second run is the claim the
+    // first one took, not the match. A push does not clear the request.
+    expect(matchesRule(route, { ...base, revision: 'pushed' })).toBe(true)
+
+    // Answering the review clears the request on GitHub's side, and the trigger
+    // stops being raised at all.
+    expect(matchesRule(route, { ...base, requestedReviewers: [] })).toBe(false)
+
+    // Somebody else's review request is not this agent's business.
+    expect(matchesRule(route, { ...base, requestedReviewers: ['someone-else'] })).toBe(false)
+  })
+
+  it('pr-review-cycle holds one claim across pushes, and re-arms when the request lapses', () => {
+    const route = filled('pr-review-cycle')
+    const asked = event({
+      type: TRIGGER_TYPE.PR_REVIEW_REQUESTED,
+      provider: TICKET_PROVIDER.GITHUB,
+      ref: 'acme/www#7',
+      prNumber: 7,
+      requestedReviewers: ['acme-reviewer'],
     })
 
-    expect(matchesRule(route, { ...base, changes: changes(['acme-reviewer']) })).toBe(true)
-    // The author pushing or replying adds no reviewer.
-    expect(matchesRule(route, { ...base, changes: changes([]) })).toBe(false)
-    // A second round is still allowed after the first completed.
-    expect(
-      matchesRule(route, {
-        ...base,
-        labels: [SENTINEL0_LABEL.DONE],
-        changes: changes(['acme-reviewer']),
-      })
-    ).toBe(true)
+    // The revision moves on every push; the key must not, or each commit would
+    // start another review round.
+    expect(dedupeKey(route, asked)).toBe(dedupeKey(route, { ...asked, revision: 'pushed' }))
+    expect(guardOf(route).refire).toBe('while-matched')
   })
 
   it('pr-assigned skips drafts', () => {
