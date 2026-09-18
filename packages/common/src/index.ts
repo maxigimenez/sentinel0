@@ -125,6 +125,8 @@ export interface AgentDescriptor {
   toolsets: string[]
   skills: string[]
   githubLogin?: string
+  linearUserId?: string
+  linearWorkspaceId?: string
   avatarUrl?: string
   enabled: boolean
   discoveredAt: number
@@ -170,6 +172,9 @@ export interface TriggerEvent {
   labels: string[]
   state?: string
   assignees?: string[]
+  linearWorkspaceId?: string
+  repository?: string
+  isClosed?: boolean
   prNumber?: number
   requestedReviewers?: string[]
   isDraft?: boolean
@@ -248,6 +253,8 @@ export interface RouteTarget {
   agentRef: {
     profile?: string
     githubLogin?: string
+    linearUserId?: string
+    linearWorkspaceId?: string
   }
 }
 
@@ -263,6 +270,8 @@ export interface RouteExecution {
    */
   prompt: string
   requireApproval: boolean
+  /** Assignment implementations must have an explicit repository. */
+  requireRepository?: boolean
   modelOverride?: string | null
   timeoutSeconds: number
   /**
@@ -454,6 +463,8 @@ export interface HermesProfileConfig {
   name: string
   apiKey: string
   githubLogin?: string
+  linearUserId?: string
+  linearWorkspaceId?: string
   role?: string
   /** Shown beside this agent's Slack notifications. */
   avatarUrl?: string
@@ -481,6 +492,8 @@ export interface ProjectConfig {
     project?: string
     owner?: string
     repo?: string
+    /** GitHub owner/repo used when implementing a Linear issue. */
+    repository?: string
   }
 }
 
@@ -508,6 +521,10 @@ export interface AppConfig {
 }
 
 export const CONFIG_VERSION = 2
+
+export function isRepositorySlug(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(value)
+}
 export const DEFAULT_API_PORT = 9371
 export const DEFAULT_CONCURRENCY = 2
 

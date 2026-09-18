@@ -1,0 +1,2 @@
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS linear_user_id TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS linear_workspace_id TEXT;

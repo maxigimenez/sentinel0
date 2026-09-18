@@ -194,12 +194,22 @@ asks only for what the template declares, and asks for it with the right control
 | `<PROJECT_ID>` | a dropdown of registered projects |
 | `<AGENT_PROFILE>` | a dropdown of discovered agents |
 | `<AGENT_GITHUB_LOGIN>` | filled from the selected agent |
+| `<LINEAR_USER_ID>`, `<LINEAR_WORKSPACE_ID>` | editable fields filled from the selected agent |
 | anything else | a text field |
 
 Free text where the API already knows the answer produces a route that is structurally
 valid and can never match — a typo'd project id fires nothing, silently, forever.
 Selecting the agent is also what fills a `githubLogin` target, so the two cannot drift
-apart the way two independent fields would.
+apart the way two independent fields would. Selecting a Linear agent also fills its
+user and workspace IDs from runner inventory. Configure those IDs in the runner;
+the Agents table displays them. Editing a route preserves its identity target.
+
+The assigned implementation templates limit project choices to the matching provider
+and explain that every currently assigned open issue is eligible. For a Linear
+project, **Add project** includes an **Implementation repository** field (`owner/repo`).
+The API rejects enabling an implementation route with missing repository context or
+an unknown/ambiguous agent. See [assigned issue setup](./routes.md#implement-an-assigned-issue)
+for the single-runner limitation and the current release's behavior.
 
 Under the prompt is the list of variables the runner substitutes at dispatch. Clicking
 one inserts it at the cursor. This matters more than it looks: the runner deliberately

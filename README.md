@@ -34,6 +34,11 @@ needs a release.
 Ready-made routes for every supported case, including multi-round pull request review,
 are in **[docs/routes.md](./docs/routes.md)** and served from `GET /v1/route-templates`.
 
+Assignment templates can start an implementation when a Linear or GitHub issue is
+assigned to a configured bot. See [setup and current scope](./docs/routes.md#implement-an-assigned-issue).
+The [six-release plan](./docs/plans/assigned-ticket-pr-feedback.md) covers durable work,
+verified PR evidence, and continuation in the same Hermes session.
+
 ## How it fits together
 
 ```

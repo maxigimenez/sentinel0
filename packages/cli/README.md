@@ -29,7 +29,7 @@ On the machine that runs Hermes:
 
 ```bash
 sentinel0 init          # cloud key, Hermes profiles — each key is probed as you enter it
-sentinel0 preflight     # Node, Hermes, cloud, gh auth
+sentinel0 preflight     # Node, Hermes, cloud, tracker credentials
 sentinel0 start
 sentinel0 runner install  # survive reboots (launchd)
 ```
@@ -78,6 +78,12 @@ route, rewording what an agent is asked to do never needs one either.
 Ready-made routes for every supported case, including multi-round pull request review,
 ship with the control plane and are served from `GET /v1/route-templates`.
 
+For assigned implementation, `init` accepts a profile's GitHub login or its Linear
+user and workspace IDs; `agents` shows those declarations. Linear projects also need
+an implementation repository. See the
+[assignment setup](https://github.com/maxigimenez/sentinel0/blob/main/docs/routes.md#implement-an-assigned-issue)
+for route templates, initial-run behavior, and release limitations.
+
 ## State
 
 Everything this CLI keeps lives under `~/.sentinel0` — cloud credentials and Hermes keys
@@ -91,7 +97,8 @@ in `config.json`, the last known good routes in `routes.json`, run history in
 - **Node.js >= 22.5** — the CLI re-executes itself under a compatible interpreter if the
   active one cannot load `node:sqlite`
 - A **sentinel0 control plane** to point at, and a `snt_usr_` key for it
-- `gh`, authenticated, if any project pulls from GitHub
+- A GitHub integration token if any project pulls from GitHub. Hermes profiles need
+  their own repository credentials to open PRs; Sentinel0 does not pass its token on.
 
 ## Documentation
 

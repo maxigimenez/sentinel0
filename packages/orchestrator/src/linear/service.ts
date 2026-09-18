@@ -20,13 +20,16 @@ interface IssueNode {
   url?: string
   createdAt?: string
   updatedAt?: string
-  state?: { name?: string }
+  state?: { name?: string; type?: string }
+  assignee?: { id: string } | null
   labels?: { nodes: Array<{ name: string }> }
 }
 
 const ISSUES_QUERY = `
-  query Issues($filter: IssueFilter) {
-    issues(filter: $filter, first: 100) {
+  query Issues($filter: IssueFilter, $after: String) {
+    organization { id }
+    issues(filter: $filter, first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
       nodes {
         id
         identifier
@@ -35,7 +38,8 @@ const ISSUES_QUERY = `
         url
         createdAt
         updatedAt
-        state { name }
+        state { name type }
+        assignee { id }
         labels { nodes { name } }
       }
     }
@@ -102,9 +106,37 @@ export class LinearService implements TriggerSource, TrackerWriter {
       filter.project = { name: { eq: projectName } }
     }
 
-    const data = await this.request<{ issues: { nodes: IssueNode[] } }>(ISSUES_QUERY, { filter })
+    const nodes = new Map<string, IssueNode>()
+    const cursors = new Set<string>()
+    let after: string | undefined
+    let workspaceId: string | undefined
+    do {
+      const data = await this.request<{
+        organization: { id: string }
+        issues: { nodes: IssueNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } }
+      }>(ISSUES_QUERY, { filter, after })
+      if (!data.organization?.id || (workspaceId && workspaceId !== data.organization.id)) {
+        throw new Error('Linear workspace changed or was missing during issue collection.')
+      }
+      workspaceId = data.organization.id
+      for (const issue of data.issues.nodes) {
+        nodes.set(issue.id, issue)
+      }
+      const page = data.issues.pageInfo
+      if (!page) {
+        throw new Error('Linear issue response is missing pageInfo.')
+      }
+      if (!page.hasNextPage) {
+        break
+      }
+      if (!page.endCursor || cursors.has(page.endCursor)) {
+        throw new Error('Linear issue pagination did not advance.')
+      }
+      cursors.add(page.endCursor)
+      after = page.endCursor
+    } while (after)
 
-    return data.issues.nodes.map((issue) => ({
+    return [...nodes.values()].map((issue) => ({
       type: TRIGGER_TYPE.TICKET,
       projectId: project.id,
       provider: TICKET_PROVIDER.LINEAR,
@@ -118,6 +150,10 @@ export class LinearService implements TriggerSource, TrackerWriter {
       url: issue.url,
       state: issue.state?.name,
       labels: issue.labels?.nodes.map((label) => label.name) ?? [],
+      assignees: issue.assignee ? [issue.assignee.id] : [],
+      linearWorkspaceId: workspaceId,
+      repository: project.filters.repository,
+      isClosed: issue.state?.type === 'completed' || issue.state?.type === 'canceled',
     }))
   }
 

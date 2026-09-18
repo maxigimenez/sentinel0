@@ -50,6 +50,8 @@ const GITHUB_LOGIN: RouteTemplatePlaceholder = {
 }
 
 export const ROUTE_CATALOG: RouteTemplate[] = [
+  assignmentTemplate('linear'),
+  assignmentTemplate('github'),
   // ── Tickets ───────────────────────────────────────────────
   {
     id: 'ticket-label-analysis',
@@ -364,6 +366,61 @@ export const ROUTE_CATALOG: RouteTemplate[] = [
     },
   },
 ]
+
+function assignmentTemplate(provider: 'linear' | 'github'): RouteTemplate {
+  return {
+    id: `${provider}-assigned-implementation`,
+    name: `Implement an assigned ${provider === 'linear' ? 'Linear' : 'GitHub'} issue`,
+    summary: 'Assign an issue to the agent; it implements it and reports back.',
+    description:
+      'Starts once while the issue is assigned, including assignments made while the runner was offline. Requires repository context. This starts an initial run; automatic PR feedback continuation is not yet supported. Use one runner per project/profile.',
+    placeholders:
+      provider === 'github'
+        ? [PROJECT, GITHUB_LOGIN]
+        : [
+            PROJECT,
+            {
+              token: '<LINEAR_USER_ID>',
+              label: 'Linear user ID',
+              hint: 'The immutable user ID declared on the Hermes profile.',
+            },
+            {
+              token: '<LINEAR_WORKSPACE_ID>',
+              label: 'Linear workspace ID',
+              hint: 'The organization ID returned by Linear.',
+            },
+          ],
+    route: {
+      name: `Implement assigned ${provider} issue`,
+      priority: 100,
+      enabled: true,
+      guard: { refire: 'once', markers: true },
+      trigger: { type: 'ticket', provider, projectId: '<PROJECT_ID>' },
+      match: {},
+      target: {
+        agentRef:
+          provider === 'github'
+            ? { githubLogin: '<AGENT_GITHUB_LOGIN>' }
+            : { linearUserId: '<LINEAR_USER_ID>', linearWorkspaceId: '<LINEAR_WORKSPACE_ID>' },
+      },
+      execution: {
+        requireApproval: false,
+        requireRepository: true,
+        timeoutSeconds: 1800,
+        prompt: [
+          'Implement the issue assigned to you, following your profile instructions.',
+          'Issue: {{ticket.ref}} — {{ticket.title}}',
+          'Source: {{ticket.url}}',
+          'Repository: {{repo.slug}}',
+          '{{ticket.body}}',
+          'Use your own repository tools and credentials. Validate your changes and open a PR linking the source issue.',
+          'Report the PR URL and validation result in your final summary. Do not claim unrun or pending checks passed.',
+        ].join('\n'),
+      },
+      outcome: { postComment: { target: 'ticket' } },
+    },
+  }
+}
 
 export function findRouteTemplate(id: string): RouteTemplate | undefined {
   return ROUTE_CATALOG.find((template) => template.id === id)

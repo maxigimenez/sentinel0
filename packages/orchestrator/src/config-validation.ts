@@ -1,5 +1,6 @@
 import {
   TICKET_PROVIDER,
+  isRepositorySlug,
   type CloudConfig,
   type HermesConfig,
   type HermesProfileConfig,
@@ -55,10 +56,24 @@ export function validateHermesProfile(raw: unknown, index: number): HermesProfil
     throw new Error(`hermes.profiles[${index}].enabled ("${name}") must be a boolean.`)
   }
 
+  const linearUserId = assertOptionalString(
+    raw.linearUserId,
+    `hermes.profiles[${index}].linearUserId`
+  )
+  const linearWorkspaceId = assertOptionalString(
+    raw.linearWorkspaceId,
+    `hermes.profiles[${index}].linearWorkspaceId`
+  )
+  if (Boolean(linearUserId) !== Boolean(linearWorkspaceId)) {
+    throw new Error(`Profile "${name}" needs both linearUserId and linearWorkspaceId.`)
+  }
+
   return {
     name,
     apiKey,
     githubLogin: assertOptionalString(raw.githubLogin, `hermes.profiles[${index}].githubLogin`),
+    linearUserId,
+    linearWorkspaceId,
     role: assertOptionalString(raw.role, `hermes.profiles[${index}].role`),
     avatarUrl: assertOptionalString(raw.avatarUrl, `hermes.profiles[${index}].avatarUrl`),
     enabled: raw.enabled !== false,
@@ -111,6 +126,9 @@ export function validateProject(raw: unknown): ProjectConfig {
   const filtersRaw = raw.filters
   assertObject(filtersRaw, `project.filters for "${id}"`)
   const filters = filtersRaw as ProjectConfig['filters']
+  if (filters.repository !== undefined && !isRepositorySlug(filters.repository)) {
+    throw new Error(`project.filters.repository for "${id}" must be a GitHub owner/repo.`)
+  }
 
   if (provider === TICKET_PROVIDER.GITHUB) {
     assertNonEmptyString(filters.owner, `project.filters.owner for "${id}"`)

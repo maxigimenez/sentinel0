@@ -36,6 +36,17 @@ export async function runPreflight(context: CliContext): Promise<void> {
 
   if (config.hermes) {
     for (const profile of config.hermes.profiles.filter((entry) => entry.enabled)) {
+      if (profile.linearUserId || profile.linearWorkspaceId) {
+        checks.push({
+          name: `Linear identity for "${profile.name}"`,
+          ok: Boolean(profile.linearUserId && profile.linearWorkspaceId),
+          required: true,
+          detail:
+            profile.linearUserId && profile.linearWorkspaceId
+              ? `${profile.linearUserId} in ${profile.linearWorkspaceId}`
+              : 'Set both linearUserId and linearWorkspaceId.',
+        })
+      }
       const prefix = profile.name === 'default' ? '' : `/p/${profile.name}`
       let detail = ''
       let ok = false

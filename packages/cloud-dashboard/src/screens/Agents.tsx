@@ -84,6 +84,7 @@ export function Agents(): ReactNode {
                 <TableHeader>Agent</TableHeader>
                 <TableHeader>Model</TableHeader>
                 <TableHeader>GitHub</TableHeader>
+                <TableHeader>Linear</TableHeader>
                 <TableHeader>Runner</TableHeader>
                 <TableHeader>Doing</TableHeader>
               </TableRow>
@@ -116,6 +117,12 @@ export function Agents(): ReactNode {
                     <TableCellContent
                       primary={agent.github_login ?? 'not set'}
                       secondary={agent.github_login ? 'own account' : 'no PR routing'}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <TableCellContent
+                      primary={agent.linear_user_id ?? 'not set'}
+                      secondary={agent.linear_workspace_id ?? 'no Linear assignment routing'}
                     />
                   </TableCell>
                   <TableCell>

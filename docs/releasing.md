@@ -100,6 +100,18 @@ lose an afternoon.
 
 ### After a deploy
 
+For the assignment-routing release, deploy the cloud API with migration
+`008_linear_agent_identity.sql` before publishing runner inventory with Linear IDs
+or deploying the matching dashboard. Update the designated runner before enabling
+the new assignment templates. Old profile configurations remain valid because the
+two identity fields and repository binding are optional for existing routes.
+
+Before release, exercise one disposable Linear assignment and one GitHub assignment
+through Hermes and verify the source summary, repository context, and no second run
+after another poll. Automated fixtures do not replace this live acceptance gate.
+Disable the new routes to roll back intake; disabling does not cancel already active
+runs. Let them finish or cancel them explicitly. Keep the additive columns in place.
+
 The runner reloads projects and routes on its own each cycle, so nothing needs
 restarting on the Mac Mini — *unless* the deploy added an endpoint the runner needs,
 in which case the runner has to be updated too. Its fallback is deliberately quiet:

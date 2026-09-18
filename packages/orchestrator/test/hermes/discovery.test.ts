@@ -25,7 +25,15 @@ describe('discoverAgents', () => {
     const { agents, failures } = await discoverAgents(
       config(server.baseUrl, {
         profiles: [
-          { name: 'default', apiKey: 'k', enabled: true, role: 'product', githubLogin: 'bot' },
+          {
+            name: 'default',
+            apiKey: 'k',
+            enabled: true,
+            role: 'product',
+            githubLogin: 'bot',
+            linearUserId: 'u',
+            linearWorkspaceId: 'w',
+          },
         ],
       }),
       123
@@ -42,6 +50,8 @@ describe('discoverAgents', () => {
         toolsets: ['core'],
         skills: ['github-pr-workflow'],
         githubLogin: 'bot',
+        linearUserId: 'u',
+        linearWorkspaceId: 'w',
         enabled: true,
         discoveredAt: 123,
       },

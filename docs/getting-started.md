@@ -107,16 +107,23 @@ Neither is recoverable. Store them now.
 
 ## 4. Configure what should happen
 
-Three shapes of route cover most of what you will want:
+These routes cover the common starting points:
 
 | You want | `trigger.type` | `match` |
 |---|---|---|
 | a ticket gets a label | `ticket` | `labels` or `labelsAdded` |
+| an issue is assigned to the implementer | `ticket` | target by GitHub login or scoped Linear identity |
 | a PR is assigned to someone | `pr_event` | `assignees` or `assigneesAdded` |
 | an agent is asked to review a PR | `pr_review_requested` | target by `githubLogin` |
 
 Routes fire **once per item** by default and mark their work with `sentinel0:` labels,
 so an agent's own commits and comments cannot retrigger the route that started them.
+
+For assigned implementation, follow [the assignment setup](./routes.md#implement-an-assigned-issue):
+declare the bot identity in the Hermes profile configuration and bind Linear projects
+to an implementation repository. This starts the initial run and source summary;
+automatic PR feedback continuation is a later release. `preflight` checks identity
+configuration shape, not whether the configured bot actually owns the account.
 
 **[routes.md](./routes.md) is the full reference** — every trigger, every match clause,
 the loop guard, and a ready-made route for each supported case. You can also fetch

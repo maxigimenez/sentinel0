@@ -160,9 +160,27 @@ export async function runInit(context: CliContext): Promise<void> {
       await p.text({
         message: `GitHub login for "${name}" (optional)`,
         initialValue: remembered?.githubLogin ?? '',
-        placeholder: 'Needed only for PR-review routes',
+        placeholder: 'Used for assigned GitHub issues and PR-review routes',
       })
     ).trim()
+
+    const linearUserId = assertNotCancel(
+      await p.text({
+        message: `Linear user ID for "${name}" (optional)`,
+        initialValue: remembered?.linearUserId ?? '',
+        placeholder: 'Immutable user UUID, not a display name',
+      })
+    ).trim()
+    const linearWorkspaceId = linearUserId
+      ? assertNotCancel(
+          await p.text({
+            message: `Linear workspace ID for "${name}"`,
+            initialValue: remembered?.linearWorkspaceId ?? '',
+            validate: (value) =>
+              !value?.trim() ? 'The Linear organization ID is required.' : undefined,
+          })
+        ).trim()
+      : ''
 
     const avatarUrl = assertNotCancel(
       await p.text({
@@ -178,6 +196,7 @@ export async function runInit(context: CliContext): Promise<void> {
       enabled: true,
       ...(role ? { role } : {}),
       ...(githubLogin ? { githubLogin } : {}),
+      ...(linearUserId ? { linearUserId, linearWorkspaceId } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
     }
   }

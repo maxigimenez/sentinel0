@@ -78,6 +78,69 @@ async function renderAt(path: string) {
   return render(<App />)
 }
 
+describe('assigned issue setup', () => {
+  it('saves a scoped Linear route without converting it to a profile target', async () => {
+    const route = {
+      ...routesFixture.routes[0],
+      trigger: { type: 'ticket', provider: 'linear', projectId: 'ENG' },
+      target: { agentRef: { linearUserId: 'user-bot', linearWorkspaceId: 'workspace' } },
+      execution: { ...routesFixture.routes[0].execution, requireRepository: true },
+    }
+    const updates: unknown[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname
+        if (path === `/v1/routes/${route.id}`) {
+          if (init?.method === 'PUT') {
+            updates.push(JSON.parse(String(init.body)))
+          }
+          return Response.json({ route })
+        }
+        return Response.json(ROUTES[path] ?? {})
+      })
+    )
+    await renderAt(`/routes/${route.id}/edit`)
+    expect(await screen.findByText('Assignment intake')).toBeTruthy()
+    expect((screen.getByLabelText('Linear user id') as HTMLInputElement).value).toBe('user-bot')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(updates).toHaveLength(1))
+    expect(updates[0]).toMatchObject({
+      target: route.target,
+      execution: { requireRepository: true },
+    })
+  })
+
+  it('includes the implementation repository when creating a Linear project', async () => {
+    const posts: unknown[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/v1/projects' && init?.method === 'POST') {
+          const project = JSON.parse(String(init.body))
+          posts.push(project)
+          return Response.json({ project })
+        }
+        return Response.json(ROUTES[path] ?? {})
+      })
+    )
+    await renderAt('/projects/new')
+    const user = userEvent.setup()
+    await user.click(await screen.findByLabelText('Provider'))
+    await user.click(await screen.findByRole('option', { name: 'Linear' }))
+    await user.type(screen.getByLabelText(/team/i), 'ENG')
+    await user.type(screen.getByLabelText(/implementation repository/i), 'acme/api')
+    await user.click(screen.getByRole('button', { name: /save project/i }))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0]).toMatchObject({
+      provider: 'linear',
+      filters: { team: 'ENG', repository: 'acme/api' },
+    })
+  })
+})
+
 describe('signed-in shell', () => {
   it('restores the stored key and shows the organization', async () => {
     await renderAt('/')

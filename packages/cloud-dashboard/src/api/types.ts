@@ -57,6 +57,8 @@ export interface Agent {
   toolsets: string[] | null
   skills: string[] | null
   github_login: string | null
+  linear_user_id?: string | null
+  linear_workspace_id?: string | null
   avatar_url: string | null
   enabled: boolean
   synced_at: string | null
@@ -178,8 +180,20 @@ export interface RoutingRule {
   enabled: boolean
   trigger: { type: string; provider?: string; projectId?: string }
   match?: Record<string, unknown>
-  target: { agentRef?: { profile?: string; githubLogin?: string } }
-  execution: { prompt: string; requireApproval?: boolean; timeoutSeconds?: number }
+  target: {
+    agentRef?: {
+      profile?: string
+      githubLogin?: string
+      linearUserId?: string
+      linearWorkspaceId?: string
+    }
+  }
+  execution: {
+    prompt: string
+    requireApproval?: boolean
+    requireRepository?: boolean
+    timeoutSeconds?: number
+  }
   outcome?: Record<string, unknown>
   guard?: { refire?: string; markers?: boolean }
 }

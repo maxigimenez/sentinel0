@@ -45,6 +45,19 @@ describe('toDraft', () => {
 })
 
 describe('applyDraft', () => {
+  it('preserves and edits a workspace-scoped Linear identity without replacing it with a profile', () => {
+    const base = {
+      ...stored,
+      target: { agentRef: { linearUserId: 'u1', linearWorkspaceId: 'w1' } },
+    }
+    const draft = toDraft(base)
+    const saved = applyDraft(base, {
+      ...draft,
+      extras: { '<LINEAR_USER_ID>': 'u2', '<LINEAR_WORKSPACE_ID>': 'w2' },
+    })
+    expect(saved.target.agentRef).toEqual({ linearUserId: 'u2', linearWorkspaceId: 'w2' })
+    expect(draft.extras).toEqual({ '<LINEAR_USER_ID>': 'u1', '<LINEAR_WORKSPACE_ID>': 'w1' })
+  })
   /**
    * The reason this function exists. The form edits seven fields; a route also
    * carries the match clauses and the guard that stops it re-firing on the

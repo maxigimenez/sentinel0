@@ -8,6 +8,7 @@ import {
   PROMPT_VARIABLES,
   ROUTE_CATALOG,
   validateRoutingRule,
+  isRepositorySlug,
   type RoutingRule,
 } from '@sentinel0/common'
 import { isIntegrationProvider, INTEGRATION_PROVIDER } from '@sentinel0/common'
@@ -39,6 +40,52 @@ const MAX_PROMPT_LENGTH = 20_000
  * UI from the start: list endpoints are paged, mutations return the stored
  * object, and nothing here requires knowing how the runner works.
  */
+async function validateAssignmentContext(
+  db: Database,
+  orgId: string,
+  route: RoutingRule
+): Promise<string | undefined> {
+  if (!route.execution.requireRepository || route.enabled === false) {
+    return undefined
+  }
+  const { rows: projects } = await db.query<{ provider: string; filters: Record<string, unknown> }>(
+    'SELECT provider, filters FROM projects WHERE org_id = $1 AND id = $2',
+    [orgId, route.trigger.projectId]
+  )
+  const project = projects[0]
+  if (!project || (route.trigger.provider && project.provider !== route.trigger.provider)) {
+    return 'Choose an existing project with the same provider as the assignment route.'
+  }
+  const filters = project.filters ?? {}
+  const repository =
+    project.provider === 'github'
+      ? typeof filters.owner === 'string' && typeof filters.repo === 'string'
+        ? `${filters.owner}/${filters.repo}`
+        : undefined
+      : filters.repository
+  if (!isRepositorySlug(repository)) {
+    return 'Configure the project repository before enabling an assignment implementation.'
+  }
+  const ref = route.target.agentRef
+  const { rows: agents } = await db.query(
+    `SELECT id FROM agents WHERE org_id = $1 AND enabled = true AND
+      (($2::text IS NOT NULL AND profile = $2) OR
+       ($3::text IS NOT NULL AND lower(github_login) = lower($3)) OR
+       ($4::text IS NOT NULL AND linear_user_id = $4 AND linear_workspace_id = $5))`,
+    [
+      orgId,
+      ref.profile ?? null,
+      ref.githubLogin ?? null,
+      ref.linearUserId ?? null,
+      ref.linearWorkspaceId ?? null,
+    ]
+  )
+  if (agents.length !== 1) {
+    return 'The assignment target must identify exactly one enabled agent. Check the runner inventory.'
+  }
+  return undefined
+}
+
 export function registerUserRoutes(app: FastifyInstance, db: Database): void {
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/v1/') || request.url.startsWith('/v1/runner/')) {
@@ -113,7 +160,7 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
     const { orgId } = authOf(request)
     const { rows } = await db.query(
       `SELECT a.id, a.profile, a.display_name, a.role, a.model, a.provider,
-              a.toolsets, a.skills, a.github_login, a.avatar_url, a.enabled, a.synced_at,
+              a.toolsets, a.skills, a.github_login, a.linear_user_id, a.linear_workspace_id, a.avatar_url, a.enabled, a.synced_at,
               a.status, a.current_run_id, a.status_at,
               r.name AS runner, (r.last_seen_at < now() - interval '90 seconds') AS runner_stale
        FROM agents a JOIN runners r ON r.id = a.runner_id
@@ -143,6 +190,16 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
     }
     if (body.provider !== 'github' && body.provider !== 'linear') {
       return reply.code(400).send({ error: 'provider must be "github" or "linear".' })
+    }
+    if (
+      body.filters !== undefined &&
+      (!body.filters || typeof body.filters !== 'object' || Array.isArray(body.filters))
+    ) {
+      return reply.code(400).send({ error: 'filters must be an object.' })
+    }
+    const filters = (body.filters ?? {}) as Record<string, unknown>
+    if (filters.repository !== undefined && !isRepositorySlug(filters.repository)) {
+      return reply.code(400).send({ error: 'filters.repository must be a GitHub owner/repo.' })
     }
 
     await db.query(
@@ -178,6 +235,10 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
     const problem = validateRoutingRule(route)
     if (problem) {
       return reply.code(400).send({ error: problem })
+    }
+    const assignmentProblem = await validateAssignmentContext(db, orgId, route)
+    if (assignmentProblem) {
+      return reply.code(400).send({ error: assignmentProblem })
     }
 
     const id = route.id || newId('rt')
@@ -238,6 +299,10 @@ export function registerUserRoutes(app: FastifyInstance, db: Database): void {
     const problem = validateRoutingRule(route)
     if (problem) {
       return reply.code(400).send({ error: problem })
+    }
+    const assignmentProblem = await validateAssignmentContext(db, orgId, route)
+    if (assignmentProblem) {
+      return reply.code(400).send({ error: assignmentProblem })
     }
 
     const stored: RoutingRule = { ...route, guard: { ...DEFAULT_ROUTE_GUARD, ...route.guard } }

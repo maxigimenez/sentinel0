@@ -216,24 +216,45 @@ export class GitHubRestClient {
     repo: string,
     filters: { state?: string; labels?: string[] } = {}
   ): Promise<GitHubIssue[]> {
-    const issues =
-      (await this.request<GitHubIssue[]>('GET', `/repos/${owner}/${repo}/issues`, {
-        query: {
-          state: filters.state ?? 'open',
-          per_page: PAGE_SIZE,
-          labels: filters.labels?.length ? filters.labels.join(',') : undefined,
-        },
-      })) ?? []
+    const issues = await this.pages<GitHubIssue>(`/repos/${owner}/${repo}/issues`, {
+      state: filters.state ?? 'open',
+      labels: filters.labels?.length ? filters.labels.join(',') : undefined,
+    })
 
     return issues.filter((issue) => issue.pull_request === undefined)
   }
 
+  private async pages<T extends { number: number }>(
+    path: string,
+    query: RequestOptions['query']
+  ): Promise<T[]> {
+    const items = new Map<number, T>()
+    for (let page = 1; ; page++) {
+      const batch =
+        (await this.request<T[]>('GET', path, {
+          query: {
+            ...query,
+            per_page: PAGE_SIZE,
+            page,
+            sort: 'created',
+            direction: 'asc',
+          },
+        })) ?? []
+      const previousSize = items.size
+      for (const item of batch) {
+        items.set(item.number, item)
+      }
+      if (batch.length < PAGE_SIZE) {
+        return [...items.values()]
+      }
+      if (items.size === previousSize) {
+        throw new Error(`GitHub pagination did not advance for ${path}.`)
+      }
+    }
+  }
+
   async pullRequests(owner: string, repo: string): Promise<GitHubPullRequest[]> {
-    return (
-      (await this.request<GitHubPullRequest[]>('GET', `/repos/${owner}/${repo}/pulls`, {
-        query: { state: 'open', per_page: PAGE_SIZE },
-      })) ?? []
-    )
+    return this.pages<GitHubPullRequest>(`/repos/${owner}/${repo}/pulls`, { state: 'open' })
   }
 
   async createComment(owner: string, repo: string, number: number, body: string): Promise<void> {

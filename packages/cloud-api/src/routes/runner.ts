@@ -180,8 +180,8 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
         await client.query(
           `INSERT INTO agents (id, org_id, runner_id, profile, display_name, role, model,
                                provider, toolsets, skills, github_login, avatar_url,
-                               enabled, synced_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())`,
+                               enabled, linear_user_id, linear_workspace_id, synced_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())`,
           [
             newId('agt'),
             orgId,
@@ -196,6 +196,8 @@ export function registerRunnerRoutes(app: FastifyInstance, db: Database): void {
             agent.githubLogin ?? null,
             agent.avatarUrl ?? null,
             agent.enabled,
+            agent.linearUserId ?? null,
+            agent.linearWorkspaceId ?? null,
           ]
         )
       }

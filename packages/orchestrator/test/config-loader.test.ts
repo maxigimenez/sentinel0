@@ -92,6 +92,33 @@ describe('readConfigStore', () => {
 })
 
 describe('loadConfig', () => {
+  it('round-trips the scoped Linear bot identity and repository', async () => {
+    await writeRaw(
+      validConfig({
+        hermes: {
+          baseUrl: 'http://localhost:8642',
+          profiles: [{ name: 'coder', apiKey: 'k', linearUserId: 'u', linearWorkspaceId: 'w' }],
+        },
+        projects: [
+          { id: 'eng', provider: 'linear', filters: { team: 'ENG', repository: 'acme/platform' } },
+        ],
+      })
+    )
+    const config = await loadConfig()
+    expect(config.hermes?.profiles[0]).toMatchObject({ linearUserId: 'u', linearWorkspaceId: 'w' })
+    expect(config.projects[0].filters.repository).toBe('acme/platform')
+  })
+  it('rejects an unscoped Linear identity', async () => {
+    await writeRaw(
+      validConfig({
+        hermes: {
+          baseUrl: 'http://localhost:8642',
+          profiles: [{ name: 'coder', apiKey: 'k', linearUserId: 'u' }],
+        },
+      })
+    )
+    await expect(loadConfig()).rejects.toThrow('both linearUserId and linearWorkspaceId')
+  })
   it('loads projects and hermes profiles', async () => {
     await writeRaw(validConfig())
     const config = await loadConfig()
@@ -101,6 +128,21 @@ describe('loadConfig', () => {
     ])
     expect(config.hermes?.profiles[0]).toMatchObject({ name: 'product', enabled: true })
     expect(config.cloud).toBeNull()
+  })
+
+  it('keeps profile-targeted legacy configurations valid when profiles share a GitHub account', async () => {
+    await writeRaw(
+      validConfig({
+        hermes: {
+          baseUrl: 'http://h',
+          profiles: [
+            { name: 'product', apiKey: 'p', githubLogin: 'bot' },
+            { name: 'reviewer', apiKey: 'r', githubLogin: 'bot' },
+          ],
+        },
+      })
+    )
+    expect((await loadConfig()).hermes?.profiles).toHaveLength(2)
   })
 
   it('normalizes a trailing slash off the hermes base url', async () => {
