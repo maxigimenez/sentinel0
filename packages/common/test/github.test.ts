@@ -49,6 +49,23 @@ describe('authentication', () => {
 })
 
 describe('issues', () => {
+  it('paginates before removing PR rows so an issue beyond a full PR page is collected', async () => {
+    const { api, calls } = client((url) => ({
+      body:
+        url.searchParams.get('page') === '1'
+          ? Array.from({ length: 100 }, (_, n) => ({ number: n + 1, pull_request: { url: 'pr' } }))
+          : [{ number: 101, title: 'Assigned issue', assignees: [{ login: 'bot' }] }],
+    }))
+    expect((await api.issues('acme', 'platform')).map((item) => item.number)).toEqual([101])
+    expect(calls.map((call) => call.url.searchParams.get('page'))).toEqual(['1', '2'])
+  })
+
+  it('fails rather than looping on a repeated full page', async () => {
+    const { api } = client(() => ({
+      body: Array.from({ length: 100 }, (_, n) => ({ number: n + 1 })),
+    }))
+    await expect(api.issues('acme', 'platform')).rejects.toThrow('pagination did not advance')
+  })
   /*
    * The single most important line in this file.
    *

@@ -26,6 +26,11 @@ export async function runAgents(context: CliContext): Promise<void> {
     if (agent.githubLogin) {
       console.log(chalk.dim(`      github     ${agent.githubLogin}`))
     }
+    if (agent.linearUserId) {
+      console.log(
+        chalk.dim(`      linear     ${agent.linearUserId} (workspace ${agent.linearWorkspaceId})`)
+      )
+    }
     if (agent.toolsets.length) {
       console.log(chalk.dim(`      toolsets   ${agent.toolsets.join(', ')}`))
     }

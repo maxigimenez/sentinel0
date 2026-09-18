@@ -58,6 +58,7 @@ export function RouteForm({
   variables,
   extraTokens,
   preserved,
+  requiresRepository = false,
   error,
   saving,
   onSubmit,
@@ -73,6 +74,7 @@ export function RouteForm({
   extraTokens: string[]
   /** The parts of the rule this form does not edit, shown so they are not a surprise. */
   preserved: Partial<RoutingRule>
+  requiresRepository?: boolean
   error?: string
   saving: boolean
   onSubmit: () => void
@@ -87,10 +89,14 @@ export function RouteForm({
     [extraTokens]
   )
 
-  const projectOptions = projects.map((project) => ({
-    value: project.id,
-    label: `${project.id} · ${project.provider}`,
-  }))
+  const projectOptions = projects
+    .filter(
+      (project) => !preserved.trigger?.provider || project.provider === preserved.trigger.provider
+    )
+    .map((project) => ({
+      value: project.id,
+      label: `${project.id} · ${project.provider}`,
+    }))
   const agentOptions = agents.map((agent) => ({
     value: agent.profile,
     label: agent.display_name ? `${agent.profile} · ${agent.display_name}` : agent.profile,
@@ -100,7 +106,15 @@ export function RouteForm({
   // drift apart the way two free-text fields would.
   const chooseAgent = (profile: string): void => {
     const agent = agents.find((entry) => entry.profile === profile)
-    set({ agentProfile: profile, agentGithubLogin: agent?.github_login ?? '' })
+    set({
+      agentProfile: profile,
+      agentGithubLogin: agent?.github_login ?? '',
+      extras: {
+        ...draft.extras,
+        '<LINEAR_USER_ID>': agent?.linear_user_id ?? '',
+        '<LINEAR_WORKSPACE_ID>': agent?.linear_workspace_id ?? '',
+      },
+    })
   }
 
   const selectedAgent = agents.find((entry) => entry.profile === draft.agentProfile)
@@ -108,6 +122,13 @@ export function RouteForm({
   return (
     <>
       <Section title={mode === 'create' ? 'Route' : 'Edit route'}>
+        {requiresRepository ? (
+          <Alert tone="info" title="Assignment intake">
+            Every currently assigned open issue in this project's filters is eligible, including
+            assignments made while the runner was offline. Check the filters before enabling. This
+            release starts the initial run; use one runner per project/profile.
+          </Alert>
+        ) : null}
         <div className="px-form">
           <Input
             label="Name"

@@ -54,10 +54,7 @@ export function RouteEdit(): ReactNode {
     if (!route.data) {
       return
     }
-    // A route addressed by GitHub login keeps that shape, so the form asks for
-    // the login rather than a profile.
-    const byLogin = Boolean(route.data.target?.agentRef?.githubLogin)
-    const problems = draftProblems(draft, byLogin ? ['<AGENT_GITHUB_LOGIN>'] : [])
+    const problems = draftProblems(draft, identityTokens)
     if (problems.length > 0) {
       setError(problems.join(' '))
       return
@@ -81,6 +78,11 @@ export function RouteEdit(): ReactNode {
 
   const loading = route.loading || projects.loading || agents.loading || prompts.loading
   const failure = route.error ?? projects.error ?? agents.error ?? prompts.error
+  const identityTokens = route.data?.target?.agentRef?.linearUserId
+    ? ['<LINEAR_USER_ID>', '<LINEAR_WORKSPACE_ID>']
+    : route.data?.target?.agentRef?.githubLogin
+      ? ['<AGENT_GITHUB_LOGIN>']
+      : []
 
   return (
     <>
@@ -99,7 +101,8 @@ export function RouteEdit(): ReactNode {
               projects={projects.data ?? []}
               agents={agents.data ?? []}
               variables={prompts.data?.variables ?? []}
-              extraTokens={route.data.target?.agentRef?.githubLogin ? ['<AGENT_GITHUB_LOGIN>'] : []}
+              extraTokens={identityTokens}
+              requiresRepository={route.data.execution?.requireRepository}
               preserved={preservedParts(route.data)}
               error={error}
               saving={saving}

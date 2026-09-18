@@ -114,8 +114,66 @@ cannot be found by a route that names it, and `sentinel0 explain` marks such a r
 
 `githubLogin` fires only when that account is **named on the item** — assigned to it,
 or asked to review it — which is what makes "act when *this* agent is asked" address
-one agent rather than all of them. It applies to pull request triggers only; the API
-rejects it on a `ticket` route, which could never fire.
+one agent rather than all of them. It applies to pull request triggers and to
+`ticket` triggers explicitly pinned to `provider: "github"`.
+
+Linear assignment targets use immutable IDs scoped to the workspace:
+
+```jsonc
+"target": { "agentRef": {
+  "linearUserId": "LINEAR_USER_UUID",
+  "linearWorkspaceId": "LINEAR_ORGANIZATION_UUID"
+} }
+```
+
+Declare both IDs on `hermes.profiles[]` in the runner configuration. The route must
+use `type: "ticket"` and `provider: "linear"`. The collector reads the organization
+ID from the actual Linear connection; a credential for another workspace cannot
+match that target. An identity target must resolve exactly one enabled profile. Ambiguous or missing
+agents are reported by `sentinel0 explain` and are never chosen arbitrarily.
+
+### Implement an assigned issue
+
+1. Configure the implementer's Hermes profile with `githubLogin`, or with both
+   `linearUserId` and `linearWorkspaceId`. `sentinel0 init` asks for these; restart
+   the runner after changing local configuration and check `sentinel0 agents`.
+2. Give the Hermes profile working repository access and its own GitHub credentials.
+3. For Linear, bind the watched project to one implementation repository:
+   `{"team":"ENG","repository":"acme/api"}` in its `filters`. The dashboard's
+   **Add project → Linear → Implementation repository** sets this field. GitHub
+   projects use their existing `filters.owner` and `filters.repo`.
+4. Choose `linear-assigned-implementation` or `github-assigned-implementation` from
+   the route catalog. Select the project and agent, review the prompt and filters,
+   and enable the route when ready. All currently assigned open issues are eligible,
+   including assignments made before the route existed or while the runner was down.
+5. Use `sentinel0 explain --ref ENG-123` (or `acme/api#123`) to inspect matching
+   without dispatching. An enabled runner may start eligible work on its next poll;
+   stop it while reviewing an enabled route if you need a preview first.
+
+Both collectors paginate, so assignments beyond the first page remain eligible.
+Linear completed/canceled state types and closed GitHub issues are skipped even
+when included in project filters. `execution.requireRepository: true` prevents
+starting without an explicit `owner/repo`; `{{repo.slug}}` renders that repository.
+The API refuses to enable these routes without a valid project repository and
+exactly one enabled matching agent in the published inventory. Disabled drafts can
+be saved before setup is complete.
+
+This release starts the initial implementation run and posts the existing agent
+summary to the source issue. Hermes is asked to open a PR and include the link and
+checks in its summary. Sentinel0 does not yet verify those artifacts or resume the
+session for PR feedback. Use one designated runner per watched project/profile;
+distributed ownership and queued continuation are later iterations in the
+[workflow plan](./plans/assigned-ticket-pr-feedback.md).
+
+The once-only ledger suppresses another implementation when the issue changes,
+is unassigned/reassigned, or is closed/reopened. Do not enable overlapping ordinary
+implementation routes for the same work. Summary delivery currently uses the
+existing best-effort outcome path; durable delivery is planned in iteration 3.
+
+Source comments use the Linear/GitHub integration credential configured in Sentinel0,
+including any project override. Configure that credential for the bot account if
+comments should appear as the bot. The assignment identity alone does not change
+the commenting account, and Sentinel0 does not receive Hermes' credentials.
 
 ### Which GitHub account is which
 
@@ -197,8 +255,9 @@ even for a route with markers off. Starting a second agent on in-flight work is 
 wanted.
 
 A `once` route also declines anything carrying `sentinel0:done` or `sentinel0:failed`.
-**Removing that label by hand re-arms the route**, which is also how you retry
-something that failed.
+Removing the label alone does not clear the runner's once-only dedupe ledger.
+Use an explicit manual run for a deliberate retry; do not expect reassignment or
+marker removal to restart a once-only implementation.
 
 ### Choosing
 
@@ -363,7 +422,8 @@ to witness the request appear, and that moment has passed. Switch the route to
 `while-matched` + `match.reviewers`, which acts on the state instead.
 
 **It fired once and never again.** That is `refire: "once"`. The item now carries
-`sentinel0:done` — remove it to re-arm, or switch to `per-change` with a transition
+`sentinel0:done`, and the runner retains its once-only claim. Use an explicit manual
+run for a deliberate retry, or design a separate repeating route with a transition
 clause.
 
 **A transition route never fires.** It needs a prior observation, unless the item was

@@ -38,7 +38,12 @@ export function toDraft(route: RoutingRule): RouteDraft {
     enabled: route.enabled !== false,
     timeoutSeconds: String(route.execution?.timeoutSeconds ?? 1800),
     prompt: route.execution?.prompt ?? '',
-    extras: {},
+    extras: route.target?.agentRef?.linearUserId
+      ? {
+          '<LINEAR_USER_ID>': route.target.agentRef.linearUserId,
+          '<LINEAR_WORKSPACE_ID>': route.target.agentRef.linearWorkspaceId ?? '',
+        }
+      : {},
   }
 }
 
@@ -50,11 +55,12 @@ export function toDraft(route: RoutingRule): RouteDraft {
  * stops a route re-firing on its own work.
  *
  * The target keeps only the key it already had. A rule addresses an agent by
- * profile *or* by GitHub login, and the API rejects a `githubLogin` target on a
- * ticket trigger, so writing both would turn a valid route invalid.
+ * profile, GitHub login, or a scoped Linear identity. Editing preserves that
+ * choice so it cannot silently change which agent receives the work.
  */
 export function applyDraft(base: Partial<RoutingRule>, draft: RouteDraft): Omit<RoutingRule, 'id'> {
   const byLogin = Boolean(base.target?.agentRef?.githubLogin)
+  const byLinear = Boolean(base.target?.agentRef?.linearUserId)
   const priority = Number.parseInt(draft.priority, 10)
   const timeout = Number.parseInt(draft.timeoutSeconds, 10)
 
@@ -70,7 +76,14 @@ export function applyDraft(base: Partial<RoutingRule>, draft: RouteDraft): Omit<
     },
     target: {
       ...base.target,
-      agentRef: byLogin ? { githubLogin: draft.agentGithubLogin } : { profile: draft.agentProfile },
+      agentRef: byLinear
+        ? {
+            linearUserId: draft.extras['<LINEAR_USER_ID>'],
+            linearWorkspaceId: draft.extras['<LINEAR_WORKSPACE_ID>'],
+          }
+        : byLogin
+          ? { githubLogin: draft.agentGithubLogin }
+          : { profile: draft.agentProfile },
     },
     execution: {
       ...base.execution,
@@ -119,7 +132,7 @@ export function draftProblems(draft: RouteDraft, extraTokens: string[]): string[
     if (!draft.agentGithubLogin.trim()) {
       problems.push('This route matches on a GitHub identity, so it needs one.')
     }
-  } else if (!draft.agentProfile) {
+  } else if (!extraTokens.includes('<LINEAR_USER_ID>') && !draft.agentProfile) {
     problems.push('Pick the agent this route starts.')
   }
   for (const token of extraTokens) {

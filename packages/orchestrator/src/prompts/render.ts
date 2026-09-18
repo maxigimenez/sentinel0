@@ -31,7 +31,7 @@ function resolveVariable(name: string, context: PromptContext): string | undefin
       return event.projectId
     case 'repo.slug':
       // GitHub refs are `owner/repo#number`; anything else has no repo to name.
-      return event.ref.match(/^([^/]+\/[^#]+)#\d+$/)?.[1] ?? ''
+      return event.repository ?? event.ref.match(/^([^/]+\/[^#]+)#\d+$/)?.[1] ?? ''
     case 'agent.profile':
       return context.agentProfile
     case 'agent.role':

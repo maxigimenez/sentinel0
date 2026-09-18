@@ -37,6 +37,7 @@ export function ProjectNew(): ReactNode {
   const [state, setState] = useState('open')
   const [labels, setLabels] = useState<string[]>([])
   const [team, setTeam] = useState('')
+  const [implementationRepo, setImplementationRepo] = useState('')
   const [raw, setRaw] = useState('')
   const [showRaw, setShowRaw] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -81,7 +82,10 @@ export function ProjectNew(): ReactNode {
       return JSON.parse(raw) as Record<string, unknown>
     }
     if (provider === 'linear') {
-      return team ? { team } : {}
+      return {
+        ...(team ? { team } : {}),
+        ...(implementationRepo.trim() ? { repository: implementationRepo.trim() } : {}),
+      }
     }
     const [owner, name] = repo.split('/')
     return {
@@ -193,13 +197,22 @@ export function ProjectNew(): ReactNode {
                   </>
                 )
               ) : (
-                <Input
-                  label="Team key"
-                  value={team}
-                  onChange={(event) => setTeam(event.target.value)}
-                  hint="The short key Linear shows on issue identifiers, e.g. ENG."
-                  placeholder="ENG"
-                />
+                <>
+                  <Input
+                    label="Team key"
+                    value={team}
+                    onChange={(event) => setTeam(event.target.value)}
+                    hint="The short key Linear shows on issue identifiers, e.g. ENG."
+                    placeholder="ENG"
+                  />
+                  <Input
+                    label="Implementation repository"
+                    value={implementationRepo}
+                    onChange={(event) => setImplementationRepo(event.target.value)}
+                    placeholder="owner/repo"
+                    hint="Required for assigned issue implementation. Hermes uses its own repository credentials."
+                  />
+                </>
               )}
 
               <div>

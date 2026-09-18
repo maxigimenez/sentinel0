@@ -41,6 +41,8 @@ export async function discoverProfile(
     toolsets: toolsets.filter((entry) => entry.enabled !== false).map((entry) => entry.name),
     skills: skills.map((entry) => entry.name),
     githubLogin: profile.githubLogin,
+    linearUserId: profile.linearUserId,
+    linearWorkspaceId: profile.linearWorkspaceId,
     avatarUrl: profile.avatarUrl,
     enabled: profile.enabled,
     discoveredAt: now,

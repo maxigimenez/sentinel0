@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import {
   DEFAULT_ROUTE_GUARD,
   SENTINEL0_LABEL,
+  isRepositorySlug,
   type AgentDescriptor,
   type RouteGuard,
   type RouteTarget,
@@ -23,8 +24,8 @@ export function resolveAgent(
   agents: readonly AgentDescriptor[],
   target: RouteTarget
 ): AgentDescriptor | undefined {
-  const { profile, githubLogin } = target.agentRef
-  return agents.find((agent) => {
+  const { profile, githubLogin, linearUserId, linearWorkspaceId } = target.agentRef
+  const candidates = agents.filter((agent) => {
     if (!agent.enabled) {
       return false
     }
@@ -34,8 +35,12 @@ export function resolveAgent(
     if (githubLogin) {
       return agent.githubLogin?.toLowerCase() === githubLogin.toLowerCase()
     }
+    if (linearUserId) {
+      return agent.linearUserId === linearUserId && agent.linearWorkspaceId === linearWorkspaceId
+    }
     return false
   })
+  return candidates.length === 1 ? candidates[0] : undefined
 }
 
 /**
@@ -52,7 +57,24 @@ export function explainTarget(
     return undefined
   }
 
-  const { profile, githubLogin } = target.agentRef
+  const { profile, githubLogin, linearUserId, linearWorkspaceId } = target.agentRef
+  const matches = agents.filter(
+    (agent) =>
+      agent.enabled &&
+      (profile
+        ? agent.profile === profile
+        : githubLogin
+          ? agent.githubLogin?.toLowerCase() === githubLogin.toLowerCase()
+          : linearUserId &&
+            agent.linearUserId === linearUserId &&
+            agent.linearWorkspaceId === linearWorkspaceId)
+  )
+  if (matches.length > 1) {
+    return 'multiple enabled agents have this identity; configure one owner'
+  }
+  if (linearUserId) {
+    return `no enabled agent has Linear user "${linearUserId}" in workspace "${linearWorkspaceId}"`
+  }
   if (!profile && !githubLogin) {
     return 'target.agentRef names neither a profile nor a githubLogin'
   }
@@ -145,6 +167,23 @@ function matchesPattern(pattern: string | undefined, value: string): boolean {
 export function explainRule(rule: RoutingRule, event: TriggerEvent): string | undefined {
   if (!rule.enabled) {
     return 'the route is disabled'
+  }
+  if (rule.execution.requireRepository) {
+    if (!isRepositorySlug(event.repository)) {
+      return 'an assignment implementation needs a configured repository'
+    }
+    if (event.isClosed || event.state === 'closed') {
+      return 'the assigned issue is closed'
+    }
+  }
+  const { linearUserId, linearWorkspaceId } = rule.target.agentRef
+  if (
+    linearUserId &&
+    (event.provider !== 'linear' ||
+      event.linearWorkspaceId !== linearWorkspaceId ||
+      !event.assignees?.includes(linearUserId))
+  ) {
+    return 'the Linear workspace or assigned user does not match the target agent'
   }
 
   // Never start a second agent on something a run is already working on. This

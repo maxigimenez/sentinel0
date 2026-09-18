@@ -123,7 +123,8 @@ DELETE /v1/projects/:id
 
 ```jsonc
 // Linear
-{ "id": "taplands", "provider": "linear", "filters": { "team": "ENG" } }
+{ "id": "taplands", "provider": "linear",
+  "filters": { "team": "ENG", "repository": "acme/www" } }
 
 // GitHub
 { "id": "www", "provider": "github",
@@ -189,14 +190,18 @@ DELETE /v1/routes/:id
 
   "target": {
     "agentRef": { "profile": "product" }
-    // or, for either pull request trigger — matches the account being
+    // or, for PR triggers and ticket triggers with provider "github":
+    // matches the account being
     // assigned to the item or asked to review it:
     // "agentRef": { "githubLogin": "acme-reviewer-bot" }
+    // or, for ticket triggers with provider "linear":
+    // "agentRef": { "linearUserId": "user-uuid", "linearWorkspaceId": "org-uuid" }
   },
 
   "execution": {
     "prompt": "Review {{ticket.ref}}: {{ticket.title}}\n\n{{ticket.body}}",
     "requireApproval": false,            // uses Hermes' own approval gate
+    "requireRepository": false,          // assigned implementation templates set true
     "modelOverride": null,               // null = the profile's own model
     "timeoutSeconds": 1800,
     "approvalTimeoutSeconds": 3600       // optional; how long a gate may wait
@@ -398,10 +403,18 @@ PUT /v1/routes/{id}
 ```
 
 `PUT` replaces the route entirely rather than merging fields. A route is a
-single decision, and its parts constrain each other — a `githubLogin` target is
-valid on a pull request trigger and rejected on a ticket one — so a partial
+single decision, and its parts constrain each other — a Linear identity target needs
+both user and workspace IDs and a Linear ticket trigger — so a partial
 update could walk a route through states the validator rejects as a whole. The
 body is validated as the complete rule it will become.
+
+With `execution.requireRepository: true`, enabled routes also require a registered
+project of the matching provider, a valid `owner/repo` repository, and exactly one
+enabled agent resolving the target in the organization's inventory. Linear projects
+use `filters.repository`; GitHub projects use `filters.owner` and `filters.repo`.
+Invalid or ambiguous setup returns 400 on both creation and replacement. Disabled
+drafts skip this contextual check. Optional `filters.repository`, when supplied on a
+project, must be an `owner/repo` string.
 
 The id in the path wins over any id in the body, so a copy-pasted definition
 cannot rewrite a different route. `PUT` to an id that does not exist is a `404`,
@@ -493,7 +506,8 @@ than deferred — nothing will retry it, so the caller is owed the reason.
 ## Agents and runners
 
 ```http
-GET /v1/agents      Hermes profiles, as discovered by the runner (incl. avatar_url)
+GET /v1/agents      Hermes profiles, as discovered by the runner (incl. avatar_url,
+                   linear_user_id and linear_workspace_id)
 GET /v1/runners     registered runners, with health and a `stale` flag
 ```
 

@@ -11,7 +11,13 @@ import {
   type TriggerEvent,
 } from '@sentinel0/common'
 import { renderPromptText } from '../../src/prompts/render.js'
-import { dedupeKey, guardOf, matchesRule } from '../../src/routing/rule-engine.js'
+import {
+  dedupeKey,
+  guardOf,
+  matchesRule,
+  resolveAgent,
+  explainTarget,
+} from '../../src/routing/rule-engine.js'
 
 /** The values a user would type into the dashboard. */
 const ANSWERS: Record<string, string> = {
@@ -19,6 +25,8 @@ const ANSWERS: Record<string, string> = {
   '<AGENT_PROFILE>': 'reviewer',
   '<AGENT_GITHUB_LOGIN>': 'acme-reviewer',
   '<LABEL>': 'needs-agent',
+  '<LINEAR_USER_ID>': 'bot-id',
+  '<LINEAR_WORKSPACE_ID>': 'workspace-id',
 }
 
 function filled(templateId: string): RoutingRule {
@@ -221,6 +229,13 @@ describe('the templates actually fire on what they describe', () => {
 })
 
 describe('validateRoutingRule', () => {
+  it('accepts GitHub issue assignment and requires a scoped Linear target', () => {
+    expect(validateRoutingRule(filled('github-assigned-implementation'))).toBeUndefined()
+    const linear = filled('linear-assigned-implementation')
+    expect(validateRoutingRule(linear)).toBeUndefined()
+    delete linear.target.agentRef.linearWorkspaceId
+    expect(validateRoutingRule(linear)).toContain('linearWorkspaceId')
+  })
   it('rejects the one guard combination that can loop', () => {
     const route = { ...filled('ticket-label-analysis') }
     route.guard = { refire: 'per-change', markers: false }
@@ -243,6 +258,54 @@ describe('validateRoutingRule', () => {
     const route = { ...filled('ticket-label-analysis') }
     route.trigger = { ...route.trigger, type: 'nonsense' as never }
     expect(validateRoutingRule(route)).toMatch(/trigger.type must be one of/)
+  })
+})
+
+describe('assigned issue implementation', () => {
+  const linear = () =>
+    event({ assignees: ['bot-id'], linearWorkspaceId: 'workspace-id', repository: 'acme/platform' })
+  it('matches a current assignment without observation history', () => {
+    expect(matchesRule(filled('linear-assigned-implementation'), linear())).toBe(true)
+    expect(
+      matchesRule(
+        filled('github-assigned-implementation'),
+        event({ provider: 'github', assignees: ['Acme-Reviewer'], repository: 'acme/platform' })
+      )
+    ).toBe(true)
+  })
+  it.each([
+    { assignees: ['human'] },
+    { assignees: [] },
+    { linearWorkspaceId: 'another-workspace' },
+    { repository: undefined },
+    { isClosed: true },
+  ])('rejects an ineligible assignment %j', (patch) => {
+    expect(matchesRule(filled('linear-assigned-implementation'), { ...linear(), ...patch })).toBe(
+      false
+    )
+  })
+  it('resolves exactly one enabled profile by workspace and user', () => {
+    const bot = {
+      profile: 'coder',
+      enabled: true,
+      toolsets: [],
+      skills: [],
+      discoveredAt: 0,
+      linearUserId: 'bot-id',
+      linearWorkspaceId: 'workspace-id',
+    }
+    const target = filled('linear-assigned-implementation').target
+    expect(resolveAgent([bot], target)?.profile).toBe('coder')
+    expect(resolveAgent([{ ...bot, linearWorkspaceId: 'other' }], target)).toBeUndefined()
+    expect(resolveAgent([bot, { ...bot, profile: 'another' }], target)).toBeUndefined()
+    expect(explainTarget([bot, { ...bot, profile: 'another' }], target)).toContain('multiple')
+  })
+  it('renders the configured Linear repository into the implementation prompt', () => {
+    const route = filled('linear-assigned-implementation')
+    expect(
+      renderPromptText(route.execution.prompt, { event: linear(), route, agentProfile: 'coder' })
+        .prompt
+    ).toContain('Repository: acme/platform')
   })
 })
 

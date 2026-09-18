@@ -238,6 +238,10 @@ docker build --platform linux/amd64 -t sentinel0-cloud .
 
 ## Adding a migration
 
+Assignment routing adds `008_linear_agent_identity.sql`. Apply it with the API deploy
+before the updated runner/dashboard; it adds nullable agent identity columns and
+does not rewrite existing routes. See [release order and rollback](./releasing.md#after-a-deploy).
+
 Add `packages/cloud-api/src/migrations/002_whatever.sql`. Nothing else — the migrator
 picks up any `.sql` file it has not already applied and records it in
 `schema_migrations`.

@@ -145,6 +145,7 @@ export function RouteNew(): ReactNode {
                 agents={agents.data ?? []}
                 variables={prompts.data?.variables ?? []}
                 extraTokens={extraTokens}
+                requiresRepository={template.route.execution?.requireRepository}
                 preserved={preservedParts(
                   fillRouteTemplate(template, placeholderValues(draft)) as never
                 )}

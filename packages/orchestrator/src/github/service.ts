@@ -71,6 +71,8 @@ export class GitHubService implements TriggerSource, TrackerWriter {
       state: issue.state,
       labels: issue.labels?.map((label) => label.name) ?? [],
       assignees: logins(issue.assignees),
+      repository: `${owner}/${repo}`,
+      isClosed: issue.state === 'closed',
     }))
   }
 
@@ -101,6 +103,7 @@ export class GitHubService implements TriggerSource, TrackerWriter {
         state: pull.state,
         labels: pull.labels?.map((label) => label.name) ?? [],
         assignees: logins(pull.assignees),
+        repository: `${owner}/${repo}`,
         prNumber: pull.number,
         requestedReviewers: reviewers,
         isDraft: pull.draft,

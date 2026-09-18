@@ -41,8 +41,31 @@ export function validateRoutingRule(route: RoutingRule): string | undefined {
   if (!route.target?.agentRef) {
     return 'target.agentRef is required.'
   }
-  if (!route.target.agentRef.profile && !route.target.agentRef.githubLogin) {
-    return 'target.agentRef needs either a profile or a githubLogin.'
+  if (
+    !route.target.agentRef.profile &&
+    !route.target.agentRef.githubLogin &&
+    !route.target.agentRef.linearUserId
+  ) {
+    return 'target.agentRef needs a profile, githubLogin or linearUserId.'
+  }
+  const ref = route.target.agentRef
+  for (const field of ['profile', 'githubLogin', 'linearUserId', 'linearWorkspaceId'] as const) {
+    if (ref[field] !== undefined && (typeof ref[field] !== 'string' || !ref[field]?.trim())) {
+      return `target.agentRef.${field} must be a non-empty string.`
+    }
+  }
+  if (ref.linearUserId || ref.linearWorkspaceId) {
+    if (
+      !ref.linearUserId?.trim() ||
+      !ref.linearWorkspaceId?.trim() ||
+      ref.profile ||
+      ref.githubLogin
+    ) {
+      return 'A Linear identity needs linearUserId and linearWorkspaceId, without another target.'
+    }
+    if (route.trigger.type !== TRIGGER_TYPE.TICKET || route.trigger.provider !== 'linear') {
+      return 'A Linear identity requires a ticket trigger with provider linear.'
+    }
   }
 
   if (!route.execution?.prompt?.trim()) {
@@ -81,9 +104,18 @@ export function validateRoutingRule(route: RoutingRule): string | undefined {
   // us who was asked -- otherwise the route would silently never fire.
   if (route.target.agentRef.githubLogin) {
     const supported: TriggerType[] = [TRIGGER_TYPE.PR_REVIEW_REQUESTED, TRIGGER_TYPE.PR_EVENT]
+    if (route.trigger.provider === 'github') {
+      supported.push(TRIGGER_TYPE.TICKET)
+    }
     if (!supported.includes(route.trigger.type)) {
       return `target.agentRef.githubLogin only applies to ${supported.join(' or ')} triggers.`
     }
+  }
+  if (
+    route.execution.requireRepository !== undefined &&
+    typeof route.execution.requireRepository !== 'boolean'
+  ) {
+    return 'execution.requireRepository must be a boolean.'
   }
 
   const prOnly = route.match?.isDraft !== undefined || route.match?.baseBranch !== undefined
